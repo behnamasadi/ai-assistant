@@ -7,6 +7,7 @@ A production-ready autonomous development pipeline powered by Claude Code agents
 ## 📋 Table of Contents
 
 - [Overview](#overview)
+- [Quick Start](#quick-start)
 - [System Architecture](#system-architecture)
 - [Agent Roles](#agent-roles)
 - [Tech Stack](#tech-stack)
@@ -18,6 +19,7 @@ A production-ready autonomous development pipeline powered by Claude Code agents
 - [OAuth & Authentication Strategy](#oauth--authentication-strategy)
 - [Docker Setup](#docker-setup)
 - [Agent Prompt Templates](#agent-prompt-templates)
+- [Claude Code Skills & Prompt Collections](#claude-code-skills--prompt-collections)
 - [Running the System](#running-the-system)
 - [Workflow Walkthrough](#workflow-walkthrough)
 - [Error Handling & Monitoring](#error-handling--monitoring)
@@ -37,6 +39,93 @@ This system allows you to act as a remote technical director. You send a voice m
 5. The QA Agent reviews the code, runs the web app, clicks through UI flows, and provides feedback
 6. If issues are found, the Developer Agent fixes them and the loop continues
 7. Once approved, the code is merged to `main` and you receive a Telegram notification
+
+---
+
+## Quick Start
+
+Follow these steps in order. This assumes the **conda / local** workflow — for Docker, jump to [Docker Setup](#docker-setup).
+
+### Step 1 — Create your Telegram bot (2 minutes)
+
+A Telegram bot is a bot account you own, controlled via an HTTP API token. You must create one yourself via BotFather:
+
+1. Open Telegram, search for **@BotFather**, send `/newbot`
+2. Pick a display name and a username ending in `bot` (e.g. `my_coder_bot`)
+3. BotFather replies with a token like `123456789:AAE...` — this is your `TELEGRAM_BOT_TOKEN`
+4. Open a chat with your new bot and send `/start` once so Telegram registers the conversation
+5. Find your own Telegram user ID: message **@userinfobot** → it replies with your numeric ID. This is your `TELEGRAM_ALLOWED_USER_ID`
+
+**Who the bot replies to:** only you. Every incoming message is filtered against `TELEGRAM_ALLOWED_USER_ID` in `bot/main.py`. Without this lock, anyone who discovers your bot's username could trigger the agents and spend your Anthropic credit.
+
+**If you ever leak your token** (pasted in chat, committed to git, screenshotted): immediately run `/revoke` in BotFather to invalidate it and generate a new one.
+
+### Step 2 — Authenticate Claude (Max subscription, no API key needed)
+
+This project is configured to use your **Claude Max subscription** by default. No separate API billing, no `ANTHROPIC_API_KEY` required.
+
+How it works: `claude-agent-sdk` is a wrapper around the `claude` CLI in headless mode, and the CLI stores its auth token in `~/.claude/` after a one-time browser login. Every agent run then draws from your Max quota — exactly the same pool as your interactive Claude Code sessions.
+
+Do this once, after `setup_conda.sh` has installed the CLI:
+
+```bash
+conda activate ai-assistant
+claude                # opens a browser → sign in with your Claude Max account
+```
+
+Leave `ANTHROPIC_API_KEY` **empty** in `.env`. If it's set, the SDK will prefer the API key and bill your API account instead of using Max.
+
+**Rate limits to know about:** Max's Claude Code quota is generous for a single interactive user but not unlimited. A tight dev↔QA feedback loop running multiple times per hour can hit the cap — if that happens you'll see `429` / rate-limit errors in `logs/developer_agent.log` and the agent will back off. For this project's normal use (a handful of tasks per day) it's fine.
+
+**Docker:** if you switch to Docker Compose later, `~/.claude` is already mounted into the dev and qa containers so the same login carries over — no extra setup.
+
+### Step 3 — Credentials reference
+
+| Variable | Required | How to get it |
+|---|---|---|
+| `TELEGRAM_BOT_TOKEN` | **yes** | BotFather (Step 1) |
+| `TELEGRAM_ALLOWED_USER_ID` | **yes** | @userinfobot |
+| `REDIS_PASSWORD` | **yes** | pick any strong random string |
+| `GIT_REPO_PATH` | **yes** | path to the target repo (e.g. `./workspace/project`) |
+| `GIT_REMOTE_URL` | yes for push | SSH URL — `~/.ssh` is mounted so keys are reused |
+| `ANTHROPIC_API_KEY` | **no** (leave empty) | Only set if you want to bypass Max and bill API credit instead |
+| `OPENAI_API_KEY` | optional | Voice message transcription (Whisper). Skip → text-only |
+| `TEST_GOOGLE_EMAIL` / `_PASSWORD` | optional | Only if your target app has Google OAuth and QA needs to log in |
+| `TEST_GITHUB_USERNAME` / `_PASSWORD` | optional | Same, for GitHub OAuth |
+| `WEB_APP_START_COMMAND` | optional | Only if QA should boot a live web app (e.g. `npm run dev`). Empty → code-review-only |
+
+### Step 4 — Clone the target repo into `workspace/`
+
+**Important:** the agents do not edit this ai-assistant repo. They edit whichever project you clone into `workspace/project`. SSH keys must be authorized on that remote, because the developer agent pushes feature branches.
+
+```bash
+git clone git@github.com:you/your-project.git workspace/project
+```
+
+### Step 5 — Install and run
+
+```bash
+./scripts/setup_conda.sh            # creates conda env, installs Playwright + Claude Code CLI
+conda activate ai-assistant
+claude                               # one-time Max login (opens browser, only needs to run once)
+nano .env                            # fill in the required values
+./scripts/run_local.sh               # starts redis + bot + dev agent + qa agent
+tail -f logs/*.log                   # watch the pipeline in real time
+```
+
+`run_local.sh` will refuse to start if it can't find either a `~/.claude/credentials.json` or an `ANTHROPIC_API_KEY`, so if you forget the login step it fails fast with a clear message.
+
+Then open Telegram, message your bot, e.g.:
+
+> *"Add a /health endpoint that returns `{status: ok}`."*
+
+You should see: task queued → dev agent creates `feature/t-<id>` branch → commits and pushes → QA agent reviews → either merges to `main` or loops back with feedback. Every transition is sent to you as a Telegram notification.
+
+To stop everything: `./scripts/stop_local.sh`
+
+### Minimum smoke test
+
+If you just want to verify the pipeline end-to-end without Google/GitHub/Whisper/web-app complexity: set only the required values, leave `ANTHROPIC_API_KEY` and `WEB_APP_START_COMMAND` empty, log in with `claude`, and send text messages only. QA will still do Claude-driven code review — it just won't boot a browser against a running app.
 
 ---
 
@@ -489,6 +578,102 @@ Guidelines:
 - If everything passes, output: APPROVED with a brief summary.
 - Be constructive. Focus on blocking issues first.
 ```
+
+---
+
+## Claude Code Skills & Prompt Collections
+
+Claude Code supports **skills** — reusable prompt files that teach the
+agents specialized workflows (QA testing, code review, debugging,
+deployment, etc.). Third-party collections like
+[gstack](https://github.com/garrytan/gstack) bundle dozens of
+production-quality skills you can install in seconds.
+
+### How skills work
+
+A skill is a `SKILL.md` markdown file (with YAML frontmatter) stored in
+a known directory. When invoked via `/skill-name`, Claude receives the
+full content as a system message for the rest of the session.
+
+| Location | Path | Scope |
+|---|---|---|
+| **Personal** | `~/.claude/skills/<name>/SKILL.md` | All your projects |
+| **Project** | `.claude/skills/<name>/SKILL.md` | This repo only |
+
+### Installing gstack (recommended)
+
+[gstack](https://github.com/garrytan/gstack) is a curated collection of
+skills for QA testing, code review, debugging, browsing, design review,
+and more.
+
+```bash
+# Clone into your personal skills directory (one-time)
+git clone https://github.com/garrytan/gstack ~/.claude/skills/gstack
+
+# Update later
+cd ~/.claude/skills/gstack && git pull
+```
+
+After cloning, all gstack skills are immediately available as `/slash`
+commands in any Claude Code session. Useful ones for this project:
+
+| Skill | Command | What it does |
+|---|---|---|
+| Browse | `/browse` | Headless Chromium for QA testing, screenshots, form interaction |
+| QA | `/qa` | Systematically test a web app and fix bugs found |
+| Review | `/review` | Pre-landing PR review (SQL safety, trust boundaries, etc.) |
+| Investigate | `/investigate` | Root-cause debugging with 4-phase methodology |
+| Design Review | `/design-review` | Visual audit for spacing, hierarchy, consistency |
+
+### Writing custom skills for your agents
+
+You can write project-specific skills and commit them to this repo so
+both the Developer and QA agents use them automatically:
+
+```bash
+mkdir -p .claude/skills/my-workflow
+cat > .claude/skills/my-workflow/SKILL.md << 'EOF'
+---
+name: my-workflow
+description: Run the standard deploy + smoke-test workflow
+allowed-tools: Bash(git *) Read
+---
+
+# My Workflow
+
+1. Run tests: `npm test`
+2. Build: `npm run build`
+3. Deploy: `./scripts/deploy.sh`
+4. Smoke-test the /health endpoint
+EOF
+```
+
+Key frontmatter fields:
+
+| Field | Effect |
+|---|---|
+| `name` | Becomes the `/slash-command` |
+| `description` | Tells Claude when to auto-load the skill |
+| `disable-model-invocation: true` | Only you can invoke it (good for deploy/push) |
+| `allowed-tools` | Pre-approve tools so Claude doesn't ask permission |
+| `context: fork` | Run in an isolated subagent |
+
+### Skills vs CLAUDE.md
+
+- **CLAUDE.md** — always-on context loaded every session ("here's how our
+  system works, our conventions, our architecture")
+- **Skills** — loaded on demand when invoked ("here's how to deploy" /
+  "here's how to run QA")
+
+Use CLAUDE.md for facts and conventions. Use skills for procedures and
+workflows.
+
+### More prompt collections
+
+- [gstack](https://github.com/garrytan/gstack) — QA, browse, review, debug, design
+- [Piebald AI Claude Code System Prompts](https://github.com/Piebald-AI/claude-code-system-prompts) — system prompt templates
+- [Awesome Claude Code Subagents](https://github.com/VoltAgent/awesome-claude-code-subagents) — subagent patterns
+- [Claude Code QA Agents](https://github.com/darcyegb/ClaudeCodeAgents) — QA-focused agents
 
 ---
 

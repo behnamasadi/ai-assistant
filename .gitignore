@@ -1,0 +1,34 @@
+# Secrets
+.env
+*.env.local
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Playwright
+playwright-report/
+test-results/
+.playwright/
+
+# Local runtime state
+workspace/
+redis_data/
+logs/
+run/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store

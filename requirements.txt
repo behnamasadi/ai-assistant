@@ -1,0 +1,18 @@
+# Combined deps for running bot + developer_agent + qa_agent in a single env.
+# Per-service requirements.txt files still exist for the Docker images.
+
+# Core
+python-dotenv==1.0.1
+redis==5.0.8
+aiohttp==3.10.5
+
+# Bot
+python-telegram-bot==21.6
+openai==1.51.0
+
+# Agents
+claude-agent-sdk==0.1.58
+GitPython==3.1.43
+
+# QA
+playwright==1.47.0

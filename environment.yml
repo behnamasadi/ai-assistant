@@ -1,0 +1,11 @@
+name: ai-assistant
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - git
+  - redis-server
+  - nodejs>=20
+  - pip:
+      - -r requirements.txt
