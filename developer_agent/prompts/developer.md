@@ -33,6 +33,34 @@ You are already on the correct feature branch. Never checkout or commit to `main
 - Auth: oauth2-proxy sets `X-Forwarded-Email` / `X-Forwarded-Groups` headers
 - Owner isolation: `project.py` filters by `owner_email`; admins see all
 
+## Browsing the live dev site
+
+You have a Playwright MCP browser available. Use it to see the actual UI at
+`https://dev.magic-inspection.com/` after making changes.
+
+**Authentication:** The dev site has HTTP basic auth in front of it.
+Navigate with credentials embedded in the URL:
+```
+https://BASIC_AUTH_USER:BASIC_AUTH_PASSWORD@dev.magic-inspection.com/
+```
+Get the values from the environment variables `BASIC_AUTH_USER` and
+`BASIC_AUTH_PASSWORD` (read them via Bash: `echo $BASIC_AUTH_USER`).
+
+After basic auth, Authentik OAuth may redirect you — for dev testing you can
+skip OAuth by just inspecting the page content after basic auth.
+
+**When to browse:**
+- After making UI/HTML/CSS/JS changes — take a screenshot to verify your work
+- When the task involves visual changes — compare before and after
+- When you need to understand the current UI layout before modifying it
+
+**MCP tools available:**
+- `mcp__playwright__browser_navigate` — go to a URL
+- `mcp__playwright__browser_screenshot` — take a screenshot
+- `mcp__playwright__browser_snapshot` — get page accessibility tree
+- `mcp__playwright__browser_click` — click an element
+- `mcp__playwright__browser_type` — type into an input
+
 ## What NOT to do
 
 - Do not add Co-Authored-By lines in commits

@@ -145,16 +145,28 @@ async def _process_task(store: TaskStore, task: Task) -> None:
     verdict, body = _parse_verdict(review)
 
     if verdict == "APPROVED":
-        commit = git.merge_to_main(task.branch)
-        task.status = TaskStatus.APPROVED.value
-        task.commit_hash = commit
+        # Deploy branch to dev for human review — don't merge yet.
+        deploy_cmd = os.environ.get("WEB_APP_START_COMMAND", "")
+        if deploy_cmd:
+            import subprocess as _sp
+            log(logger, "info", "deploying to dev", task_id=task.task_id)
+            try:
+                _sp.run(deploy_cmd, shell=True, check=True, timeout=300,
+                        capture_output=True, text=True)
+            except Exception as exc:
+                log(logger, "warning", "dev deploy failed (non-fatal)",
+                    task_id=task.task_id, error=str(exc))
+
+        task.status = TaskStatus.AWAITING_REVIEW.value
+        task.qa_feedback = body
         await store.save(task)
         await store.publish(Event(EventType.QA_APPROVED.value, task.task_id,
                                   {"summary": body[:1500]}))
-        await store.publish(Event(EventType.MERGED.value, task.task_id,
-                                  {"commit": commit[:10]}))
-        log(logger, "info", "task approved and merged",
-            task_id=task.task_id, commit=commit[:10])
+        await store.publish(Event(EventType.AWAITING_REVIEW.value, task.task_id,
+                                  {"branch": task.branch,
+                                   "summary": body[:1500]}))
+        log(logger, "info", "task approved, awaiting human review",
+            task_id=task.task_id)
         return
 
     # FEEDBACK path

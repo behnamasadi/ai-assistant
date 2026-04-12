@@ -10,6 +10,7 @@ A production-ready autonomous development pipeline powered by Claude Code agents
 - [Quick Start](#quick-start)
 - [System Architecture](#system-architecture)
 - [Agent Roles](#agent-roles)
+- [Workflow Pipeline](#workflow-pipeline)
 - [Tech Stack](#tech-stack)
 - [Prerequisites](#prerequisites)
 - [Project Structure](#project-structure)
@@ -21,7 +22,7 @@ A production-ready autonomous development pipeline powered by Claude Code agents
 - [Agent Prompt Templates](#agent-prompt-templates)
 - [Claude Code Skills & Prompt Collections](#claude-code-skills--prompt-collections)
 - [Running the System](#running-the-system)
-- [Workflow Walkthrough](#workflow-walkthrough)
+- [Workflow Walkthrough](#workflow-walkthrough-1)
 - [Error Handling & Monitoring](#error-handling--monitoring)
 - [Deployment Checklist](#deployment-checklist)
 - [References](#references)
@@ -30,15 +31,17 @@ A production-ready autonomous development pipeline powered by Claude Code agents
 
 ## Overview
 
-This system allows you to act as a remote technical director. You send a voice message from anywhere via Telegram, and the system:
+This system allows you to act as a remote technical director. You send a voice or text message from anywhere via Telegram, and the system:
 
-1. Transcribes your voice message (handled natively by Telegram)
+1. Transcribes your voice message (local Whisper on GPU, free) or accepts text directly
 2. Parses the task and pushes it to a Redis task queue
-3. Spins up a **Developer Agent** that writes code on a feature branch
+3. Spins up a **Developer Agent** that creates a feature branch and implements the change
 4. Notifies a **QA Agent** once the developer is done
 5. The QA Agent reviews the code, runs the web app, clicks through UI flows, and provides feedback
 6. If issues are found, the Developer Agent fixes them and the loop continues
-7. Once approved, the code is merged to `main` and you receive a Telegram notification
+7. Once QA passes, the Developer Agent deploys the branch to **dev.magic-inspection.com** for your review
+8. You receive a Telegram message with a link to the dev site — **you confirm or reject**
+9. On confirmation: the branch is merged to `main`, pushed, and deployed to **production**
 
 ---
 
@@ -89,7 +92,8 @@ Leave `ANTHROPIC_API_KEY` **empty** in `.env`. If it's set, the SDK will prefer 
 | `GIT_REPO_PATH` | **yes** | path to the target repo (e.g. `./workspace/project`) |
 | `GIT_REMOTE_URL` | yes for push | SSH URL — `~/.ssh` is mounted so keys are reused |
 | `ANTHROPIC_API_KEY` | **no** (leave empty) | Only set if you want to bypass Max and bill API credit instead |
-| `OPENAI_API_KEY` | optional | Voice message transcription (Whisper). Skip → text-only |
+| `WHISPER_MODEL` | optional | Local Whisper model size: `tiny`, `base` (default), `small`, `medium`, `large-v3`, `turbo` |
+| `OPENAI_API_KEY` | optional | Fallback for voice transcription if local Whisper fails. Not needed — local Whisper is free |
 | `TEST_GOOGLE_EMAIL` / `_PASSWORD` | optional | Only if your target app has Google OAuth and QA needs to log in |
 | `TEST_GITHUB_USERNAME` / `_PASSWORD` | optional | Same, for GitHub OAuth |
 | `WEB_APP_START_COMMAND` | optional | Only if QA should boot a live web app (e.g. `npm run dev`). Empty → code-review-only |
@@ -119,13 +123,13 @@ Then open Telegram, message your bot, e.g.:
 
 > *"Add a /health endpoint that returns `{status: ok}`."*
 
-You should see: task queued → dev agent creates `feature/t-<id>` branch → commits and pushes → QA agent reviews → either merges to `main` or loops back with feedback. Every transition is sent to you as a Telegram notification.
+You should see: task queued → dev agent creates `feature/t-<id>` branch → commits and pushes → QA agent reviews → dev↔QA feedback loop if needed → deploys to dev.magic-inspection.com → you get a Telegram message asking to approve or reject → on approve, merged to main and deployed to prod. Every transition is sent to you as a Telegram notification.
 
 To stop everything: `./scripts/stop_local.sh`
 
 ### Minimum smoke test
 
-If you just want to verify the pipeline end-to-end without Google/GitHub/Whisper/web-app complexity: set only the required values, leave `ANTHROPIC_API_KEY` and `WEB_APP_START_COMMAND` empty, log in with `claude`, and send text messages only. QA will still do Claude-driven code review — it just won't boot a browser against a running app.
+If you just want to verify the pipeline end-to-end without Google/GitHub/web-app complexity: set only the required values, leave `ANTHROPIC_API_KEY` empty, log in with `claude`, and send text messages only. Voice messages work out of the box (local Whisper, no API key needed). QA will still do Claude-driven code review — it just won't boot a browser against a running app if `WEB_APP_START_COMMAND` is empty.
 
 ---
 
@@ -134,14 +138,14 @@ If you just want to verify the pipeline end-to-end without Google/GitHub/Whisper
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                        YOU (Remote)                         │
-│              Send voice message via Telegram                │
+│          Send voice or text message via Telegram            │
 └───────────────────────────┬─────────────────────────────────┘
                             │
                             ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                  TELEGRAM BOT SERVICE                       │
 │  - Listens for messages (voice + text)                      │
-│  - Telegram auto-transcribes voice to text                  │
+│  - Transcribes voice via local Whisper (GPU, free)          │
 │  - Parses intent and creates task object                    │
 │  - Pushes task to Redis queue                               │
 │  - Listens for completion events → sends reply to you       │
@@ -156,34 +160,59 @@ If you just want to verify the pipeline end-to-end without Google/GitHub/Whisper
 └──────────────┬────────────────────────────┬─────────────────┘
                │                            │
                ▼                            ▼
-┌──────────────────────┐      ┌─────────────────────────────┐
-│   DEVELOPER AGENT    │      │        QA AGENT             │
-│                      │      │                             │
-│ - Pulls tasks from   │      │ - Listens for dev complete  │
-│   Redis              │      │   events on Redis           │
-│ - Runs Claude Code   │      │ - Checks out feature branch │
-│   SDK (headless)     │      │ - Runs Claude Code SDK      │
-│ - Works on feature   │      │   (headless)                │
-│   branch             │      │ - Starts web app server     │
-│ - Commits + pushes   │      │ - Runs Playwright browser   │
-│ - Publishes done     │──────▶  automation tests           │
-│   event to Redis     │      │ - Reviews code quality      │
-└──────────────────────┘      │ - Approves OR publishes     │
-               ▲              │   feedback to Redis         │
+┌──────────────────────────┐  ┌─────────────────────────────┐
+│    DEVELOPER AGENT       │  │        QA AGENT             │
+│                          │  │                             │
+│ - Pulls tasks from Redis │  │ - Listens for dev complete  │
+│ - Creates feature branch │  │   events on Redis           │
+│ - Runs Claude Code SDK   │  │ - Checks out feature branch │
+│   (headless)             │  │ - Runs Claude Code SDK      │
+│ - Implements the feature │  │   (headless)                │
+│ - Commits + pushes       │  │ - Starts web app on dev     │
+│ - Publishes DEV_COMPLETE │──▶ - Runs Playwright browser   │
+│   event to Redis         │  │   automation tests          │
+└──────────────────────────┘  │ - Reviews code quality      │
+               ▲              │ - Approves OR publishes     │
+               │              │   feedback to Redis         │
                │              └──────────────┬──────────────┘
                │                             │
                │         (if issues)         │
                └─────────────────────────────┘
                          Feedback Loop
 
-                              │ (if approved)
+                              │ (if QA approved)
                               ▼
               ┌───────────────────────────────┐
-              │     MERGE TO MAIN + NOTIFY    │
-              │  - git merge feature branch   │
-              │  - Push to remote             │
-              │  - Send Telegram message: ✅  │
-              └───────────────────────────────┘
+              │    DEPLOY TO DEV + NOTIFY     │
+              │  - Deploy branch to           │
+              │    dev.magic-inspection.com    │
+              │  - Send Telegram message:     │
+              │    "Feature ready for review  │
+              │    on dev — approve or reject" │
+              └───────────────┬───────────────┘
+                              │
+                              ▼
+              ┌───────────────────────────────┐
+              │      YOU REVIEW ON DEV        │
+              │  - Open dev.magic-inspection  │
+              │    .com in your browser       │
+              │  - Test the feature yourself  │
+              │  - Reply on Telegram:         │
+              │    ✅ "approve" or ❌ "reject"│
+              └───────────────┬───────────────┘
+                              │
+                ┌─────────────┴─────────────┐
+                │                           │
+         ✅ approved                  ❌ rejected
+                │                           │
+                ▼                           ▼
+ ┌──────────────────────┐   ┌──────────────────────────┐
+ │  MERGE + DEPLOY PROD │   │  NOTIFY — task closed    │
+ │  - Merge to main     │   │  (branch kept for future │
+ │  - Push to remote    │   │   rework if needed)      │
+ │  - Deploy to prod    │   └──────────────────────────┘
+ │  - Telegram: ✅ Done │
+ └──────────────────────┘
 ```
 
 ---
@@ -199,17 +228,62 @@ If you just want to verify the pipeline end-to-end without Google/GitHub/Whisper
 - Runs basic unit tests after implementation
 - Commits and pushes the branch
 - Publishes a `DEV_COMPLETE` event to Redis with branch name, commit hash, and summary
+- After QA approval: deploys branch to dev.magic-inspection.com for human review
+- After human approval: merges to `main`, pushes, and deploys to production
 
 ### 🔍 QA Agent
 
 - Listens for `DEV_COMPLETE` events on Redis
 - Checks out the feature branch
-- Starts the local web application server
-- Uses **Playwright** (headless browser) to navigate the app and test UI flows
-- Logs in using a dedicated test OAuth account (Google/GitHub)
+- Deploys to dev environment (`make deploy-dev`)
+- Uses **Playwright** (headless browser) to navigate dev.magic-inspection.com and test UI flows
+- Logs in through HTTP basic auth + Authentik OAuth (Google/GitHub federated)
 - Runs security review and code quality checks using specialized Claude Code prompts
 - Publishes either `QA_APPROVED` or `QA_FEEDBACK` event to Redis
 - Feedback includes specific file paths, line numbers, and issue descriptions
+
+---
+
+## Workflow Pipeline
+
+The full lifecycle of a feature request, from Telegram to production:
+
+### Phase 1 — Task Intake
+1. You send a voice or text message on Telegram describing the feature
+2. Voice is transcribed locally by Whisper running on your GPU (free, no API key)
+3. The bot creates a task and pushes it to the Redis queue
+
+### Phase 2 — Development
+4. The Developer Agent picks up the task and creates a `feature/t-<task-id>` branch
+5. It implements the feature using Claude Code SDK in headless mode
+6. It commits and pushes the branch, then publishes a `DEV_COMPLETE` event
+
+### Phase 3 — QA Review
+7. The QA Agent picks up the `DEV_COMPLETE` event
+8. It checks out the branch, deploys to the dev environment, and runs Playwright browser tests against dev.magic-inspection.com
+9. It also runs code review (security, style, correctness) via Claude Code
+10. If issues are found → `QA_FEEDBACK` event → Dev Agent fixes → back to step 7 (max 3 rounds)
+11. If everything passes → `QA_APPROVED` event
+
+### Phase 4 — Human Review (you)
+12. The branch is deployed to **dev.magic-inspection.com**
+13. You receive a Telegram message: _"Feature `t-<id>` is ready for review on dev.magic-inspection.com — reply **approve** or **reject**"_
+14. You open the dev site in your browser, test the feature manually
+15. You reply on Telegram:
+    - **"approve"** → proceed to Phase 5
+    - **"reject"** → task is closed, branch is kept for future rework
+
+### Phase 5 — Production Deploy
+16. The branch is merged to `main`
+17. Pushed to the remote repository
+18. Deployed to **production** (app.magic-inspection.com) via `make deploy-prod`
+19. You receive a final Telegram message: _"Feature `t-<id>` deployed to production"_
+
+### Key guarantees
+- **Nothing reaches production without your explicit approval** on Telegram
+- Dev ↔ QA feedback loop is capped at 3 rounds to prevent infinite loops
+- Every state transition is logged to Redis and notified to you on Telegram
+- If any step fails, you get an error notification with details
 
 ---
 
@@ -218,6 +292,7 @@ If you just want to verify the pipeline end-to-end without Google/GitHub/Whisper
 | Layer | Technology |
 |---|---|
 | Voice Interface | Telegram Bot API |
+| Voice Transcription | OpenAI Whisper (local, GPU) |
 | Bot Library | `python-telegram-bot` |
 | Task Queue & Events | Redis + `redis-py` |
 | Agent Runtime | Claude Code Agent SDK (`claude-agent-sdk`) |
@@ -687,16 +762,23 @@ docker-compose up -d
 
 ### Send a Task via Telegram
 
-Open Telegram, find your bot, and send a voice message like:
+Open Telegram, find your bot, and send a voice or text message like:
 
 > "Add a password reset feature to the login page. It should send an email with a reset link."
 
-The system will:
-1. Transcribe your voice
-2. Create a task and push to Redis
-3. Developer agent picks it up and starts coding
-4. QA agent reviews when done
-5. You get a Telegram notification when complete ✅
+The system follows this pipeline:
+
+1. **Transcribe** — voice is transcribed locally via Whisper (GPU, free); text is used directly
+2. **Queue** — task is pushed to Redis
+3. **Dev Agent** — creates `feature/t-<id>` branch, implements the feature, commits + pushes
+4. **QA Agent** — reviews code, deploys to dev, runs Playwright browser tests against dev.magic-inspection.com
+5. **Dev ↔ QA loop** — if QA finds issues, it sends feedback to the Dev Agent which fixes and resubmits (up to 3 rounds)
+6. **Deploy to dev** — once QA passes, the branch is deployed to dev.magic-inspection.com
+7. **You review** — you receive a Telegram message: _"Feature ready on dev — reply **approve** or **reject**"_
+8. **You approve** — the branch is merged to `main`, pushed to remote, and deployed to **production** (app.magic-inspection.com)
+9. **You reject** — the branch is kept but the task is closed; you can request changes in a follow-up message
+
+You stay in control: **nothing reaches production without your explicit approval on Telegram.**
 
 ### Monitor Progress
 
@@ -716,7 +798,8 @@ docker exec -it <redis-container-id> redis-cli -a $REDIS_PASSWORD KEYS "*"
 - If the Developer Agent fails, it publishes a `DEV_ERROR` event and Telegram notifies you
 - If QA fails to start the browser, it retries three times before publishing a `QA_ERROR` event
 - Maximum feedback loop iterations: **3 rounds** — after that, the task is flagged for manual review and you are notified via Telegram
-- Redis task status field tracks: `queued` → `dev_in_progress` → `qa_in_progress` → `approved` | `failed`
+- Redis task status field tracks: `queued` → `dev_in_progress` → `qa_in_progress` → `awaiting_review` → `approved` → `deployed` | `rejected` | `failed`
+- Nothing is merged or deployed to production without explicit human approval via Telegram
 
 ---
 
@@ -727,13 +810,14 @@ docker exec -it <redis-container-id> redis-cli -a $REDIS_PASSWORD KEYS "*"
 - [ ] Redis password set and working
 - [ ] Telegram bot token valid and bot is running
 - [ ] `TELEGRAM_ALLOWED_USER_ID` set to your own Telegram ID
+- [ ] Local Whisper works (send a voice message, check transcription in logs)
 - [ ] Dedicated test Google account created
 - [ ] Dedicated test GitHub account created
 - [ ] Test accounts registered in your web app
 - [ ] SSH keys mounted for git push access
-- [ ] `TESTING_MODE` endpoint disabled in production
-- [ ] Docker Compose builds successfully
-- [ ] End-to-end test: send a voice message and verify all steps complete
+- [ ] Dev environment accessible: dev.magic-inspection.com loads and basic auth works
+- [ ] Prod deploy command works: `make deploy-prod` or equivalent
+- [ ] End-to-end test: send a message → dev agent codes → QA reviews → deployed to dev → you approve on Telegram → merged + deployed to prod
 
 ---
 

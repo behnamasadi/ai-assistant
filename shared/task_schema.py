@@ -14,7 +14,10 @@ class TaskStatus(str, Enum):
     DEV_IN_PROGRESS = "dev_in_progress"
     DEV_DONE = "dev_done"
     QA_IN_PROGRESS = "qa_in_progress"
+    AWAITING_REVIEW = "awaiting_review"
     APPROVED = "approved"
+    DEPLOYED = "deployed"
+    REJECTED = "rejected"
     FAILED = "failed"
     NEEDS_MANUAL_REVIEW = "needs_manual_review"
 
@@ -28,7 +31,10 @@ class EventType(str, Enum):
     QA_APPROVED = "QA_APPROVED"
     QA_FEEDBACK = "QA_FEEDBACK"
     QA_ERROR = "QA_ERROR"
+    AWAITING_REVIEW = "AWAITING_REVIEW"
     MERGED = "MERGED"
+    DEPLOY_PROD = "DEPLOY_PROD"
+    REJECTED = "REJECTED"
     MANUAL_REVIEW = "MANUAL_REVIEW"
 
 

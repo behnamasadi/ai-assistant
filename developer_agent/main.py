@@ -40,9 +40,21 @@ async def _run_claude(user_prompt: str, system_prompt: str, cwd: str) -> str:
     """Run Claude Agent SDK in headless mode and return the assistant's final text."""
     options = ClaudeAgentOptions(
         system_prompt=system_prompt,
-        allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+        allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep",
+                        "mcp__playwright__browser_navigate",
+                        "mcp__playwright__browser_screenshot",
+                        "mcp__playwright__browser_click",
+                        "mcp__playwright__browser_type",
+                        "mcp__playwright__browser_snapshot"],
         cwd=cwd,
         permission_mode="acceptEdits",
+        mcp_servers={
+            "playwright": {
+                "type": "stdio",
+                "command": "npx",
+                "args": ["@playwright/mcp", "--headless"],
+            },
+        },
     )
     final_text_parts: list[str] = []
     async for message in query(prompt=user_prompt, options=options):

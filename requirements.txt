@@ -9,6 +9,7 @@ aiohttp==3.10.5
 # Bot
 python-telegram-bot==21.6
 openai==1.51.0
+openai-whisper==20240930
 
 # Agents
 claude-agent-sdk==0.1.58
