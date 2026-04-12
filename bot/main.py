@@ -101,8 +101,131 @@ async def on_start(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     if not _authorized(update):
         return
     await update.message.reply_text(
-        "👋 Send me a text or voice message describing what you want built."
+        "👋 Send me a text or voice message describing what you want built.\n\n"
+        "Commands:\n"
+        "/status — queue and agent status\n"
+        "/tasks — list all tasks\n"
+        "/task <id> — details for a specific task"
     )
+
+
+async def on_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _authorized(update):
+        return
+    store: TaskStore = context.application.bot_data["store"]
+    queues = await store.queue_lengths()
+    tasks = await store.get_all_tasks()
+
+    by_status: dict[str, int] = {}
+    for t in tasks:
+        by_status[t.status] = by_status.get(t.status, 0) + 1
+
+    active = [t for t in tasks if t.status in (
+        TaskStatus.DEV_IN_PROGRESS.value,
+        TaskStatus.QA_IN_PROGRESS.value,
+        TaskStatus.AWAITING_REVIEW.value,
+    )]
+
+    lines = ["📊 *System Status*\n"]
+    lines.append(f"Dev queue: {queues['dev_queue']} pending")
+    lines.append(f"QA queue: {queues['qa_queue']} pending")
+    lines.append(f"Total tasks: {len(tasks)}")
+    lines.append("")
+
+    if by_status:
+        lines.append("*By status:*")
+        status_icons = {
+            "queued": "⏳", "dev_in_progress": "🛠",
+            "dev_done": "✅", "qa_in_progress": "🔍",
+            "awaiting_review": "👀", "approved": "✅",
+            "deployed": "🚀", "rejected": "❌",
+            "failed": "💥", "needs_manual_review": "⚠️",
+        }
+        for s, count in sorted(by_status.items()):
+            icon = status_icons.get(s, "•")
+            lines.append(f"  {icon} {s}: {count}")
+
+    if active:
+        lines.append("\n*Active now:*")
+        for t in active:
+            prompt_short = t.prompt[:50].replace('\n', ' ')
+            lines.append(f"  `{t.task_id}` — {t.status}\n  _{prompt_short}_")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def on_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _authorized(update):
+        return
+    store: TaskStore = context.application.bot_data["store"]
+    tasks = await store.get_all_tasks()
+
+    if not tasks:
+        await update.message.reply_text("No tasks found.")
+        return
+
+    tasks.sort(key=lambda t: t.created_at, reverse=True)
+
+    lines = ["📋 *All Tasks* (newest first)\n"]
+    for t in tasks[:20]:
+        from datetime import datetime
+        ts = datetime.fromtimestamp(t.created_at).strftime("%m/%d %H:%M")
+        prompt_short = t.prompt[:40].replace('\n', ' ')
+        status_icons = {
+            "queued": "⏳", "dev_in_progress": "🛠",
+            "dev_done": "✅", "qa_in_progress": "🔍",
+            "awaiting_review": "👀", "approved": "✅",
+            "deployed": "🚀", "rejected": "❌",
+            "failed": "💥", "needs_manual_review": "⚠️",
+        }
+        icon = status_icons.get(t.status, "•")
+        lines.append(f"{icon} `{t.task_id}`\n  {ts} — _{prompt_short}_")
+
+    if len(tasks) > 20:
+        lines.append(f"\n_...and {len(tasks) - 20} more_")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def on_task_detail(
+    update: Update, context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if not _authorized(update):
+        return
+    if not context.args:
+        await update.message.reply_text("Usage: /task <task-id>")
+        return
+
+    store: TaskStore = context.application.bot_data["store"]
+    task = await store.get(context.args[0])
+    if not task:
+        await update.message.reply_text(f"Task `{context.args[0]}` not found.",
+                                        parse_mode="Markdown")
+        return
+
+    from datetime import datetime
+    created = datetime.fromtimestamp(task.created_at).strftime("%Y-%m-%d %H:%M")
+    updated = datetime.fromtimestamp(task.updated_at).strftime("%Y-%m-%d %H:%M")
+
+    lines = [
+        f"📝 *Task* `{task.task_id}`\n",
+        f"*Status:* {task.status}",
+        f"*Branch:* `{task.branch or 'none'}`",
+        f"*Iteration:* {task.iteration}",
+        f"*Created:* {created}",
+        f"*Updated:* {updated}",
+        f"\n*Prompt:*\n_{task.prompt[:500]}_",
+    ]
+    if task.dev_summary:
+        lines.append(f"\n*Dev summary:*\n{task.dev_summary[:500]}")
+    if task.qa_feedback:
+        lines.append(f"\n*QA feedback:*\n{task.qa_feedback[:500]}")
+    if task.error:
+        lines.append(f"\n*Error:*\n```\n{task.error[:300]}\n```")
+    if task.commit_hash:
+        lines.append(f"\n*Commit:* `{task.commit_hash[:10]}`")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -315,6 +438,9 @@ def main() -> None:
     app.bot_data["store"] = TaskStore()
 
     app.add_handler(CommandHandler("start", on_start))
+    app.add_handler(CommandHandler("status", on_status))
+    app.add_handler(CommandHandler("tasks", on_tasks))
+    app.add_handler(CommandHandler("task", on_task_detail))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     app.add_handler(MessageHandler(filters.VOICE, on_voice))
     app.add_handler(CallbackQueryHandler(on_voice_callback, pattern=r"^voice_"))

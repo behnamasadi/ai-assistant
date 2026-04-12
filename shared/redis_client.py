@@ -46,6 +46,18 @@ class TaskStore:
         raw = await self.r.hget(TASK_HASH_KEY, task_id)
         return Task.from_json(raw) if raw else None
 
+    async def get_all_tasks(self) -> list[Task]:
+        raw_map = await self.r.hgetall(TASK_HASH_KEY)
+        return [Task.from_json(v) for v in raw_map.values()]
+
+    async def delete(self, task_id: str) -> None:
+        await self.r.hdel(TASK_HASH_KEY, task_id)
+
+    async def queue_lengths(self) -> dict[str, int]:
+        dev = await self.r.llen(TASK_QUEUE_KEY)
+        qa = await self.r.llen(QA_QUEUE_KEY)
+        return {"dev_queue": dev, "qa_queue": qa}
+
     # ── Queues ──────────────────────────────────────────────────
     async def enqueue_dev(self, task_id: str) -> None:
         await self.r.rpush(TASK_QUEUE_KEY, task_id)

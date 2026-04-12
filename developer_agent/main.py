@@ -86,7 +86,14 @@ async def _process_task(store: TaskStore, task: Task) -> None:
         timeout=TIMEOUT,
     )
 
-    commit_msg = f"[{task.task_id}] {task.prompt[:72]}"
+    # Use the agent's summary as commit message (cleaner than raw voice transcript).
+    # Fall back to a truncated prompt if summary is empty.
+    if summary:
+        # First line of summary as commit subject.
+        subject = summary.split("\n")[0][:72]
+    else:
+        subject = task.prompt[:72]
+    commit_msg = f"[{task.task_id}] {subject}"
     commit = git.commit_all(commit_msg)
     if commit is None:
         # No changes produced — treat as an error so the user is notified.

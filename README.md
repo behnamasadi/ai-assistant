@@ -22,6 +22,7 @@ A production-ready autonomous development pipeline powered by Claude Code agents
 - [Agent Prompt Templates](#agent-prompt-templates)
 - [Claude Code Skills & Prompt Collections](#claude-code-skills--prompt-collections)
 - [Running the System](#running-the-system)
+- [Bot Commands](#bot-commands)
 - [Workflow Walkthrough](#workflow-walkthrough-1)
 - [Error Handling & Monitoring](#error-handling--monitoring)
 - [Deployment Checklist](#deployment-checklist)
@@ -56,7 +57,7 @@ A Telegram bot is a bot account you own, controlled via an HTTP API token. You m
 1. Open Telegram, search for **@BotFather**, send `/newbot`
 2. Pick a display name and a username ending in `bot` (e.g. `my_coder_bot`)
 3. BotFather replies with a token like `123456789:AAE...` — this is your `TELEGRAM_BOT_TOKEN`
-4. Open a chat with your new bot and send `/start` once so Telegram registers the conversation
+4. Open a chat with your new bot and send `/start` once — the bot replies with available commands (`/status`, `/tasks`, `/task <id>`)
 5. Find your own Telegram user ID: message **@userinfobot** → it replies with your numeric ID. This is your `TELEGRAM_ALLOWED_USER_ID`
 
 **Who the bot replies to:** only you. Every incoming message is filtered against `TELEGRAM_ALLOWED_USER_ID` in `bot/main.py`. Without this lock, anyone who discovers your bot's username could trigger the agents and spend your Anthropic credit.
@@ -374,6 +375,7 @@ claude-agent-system/
 │   ├── Dockerfile
 │   ├── requirements.txt
 │   ├── main.py                   # Telegram bot listener
+│   ├── dashboard.py              # Web dashboard (FastAPI, port 8095)
 │   ├── task_publisher.py         # Pushes tasks to Redis
 │   └── notification_listener.py # Listens for completion events
 │
@@ -780,26 +782,66 @@ The system follows this pipeline:
 
 You stay in control: **nothing reaches production without your explicit approval on Telegram.**
 
+### Bot Commands
+
+The Telegram bot supports the following commands:
+
+| Command | Description |
+|---|---|
+| `/start` | Welcome message and command list |
+| `/status` | Queue lengths (dev/QA pending), task counts by status, currently active tasks |
+| `/tasks` | List all tasks (newest first) with status icons and short prompts |
+| `/task <id>` | Full details for a specific task: status, branch, iteration, prompt, dev summary, QA feedback, errors, commit hash |
+
+Voice messages show the transcript with inline buttons (**Confirm** / **Edit** / **Cancel**) before queuing.
+When a feature is ready for review, you get inline buttons (**Approve & Deploy to Prod** / **Reject**).
+
+### Web Dashboard
+
+A real-time web dashboard runs alongside the bot at **http://localhost:8095**:
+
+- **Stats overview** — total tasks, dev/QA queue lengths, awaiting review, deployed, failed
+- **Task list** — all tasks with status badges, prompt previews, timestamps
+- **Filter bar** — filter by All, Active, Awaiting Review, Deployed, Failed
+- **Task details** — click a card to expand: full prompt, branch, iteration, dev summary, QA feedback, errors, commit hash
+- **Approve/Reject** — buttons appear on tasks awaiting review (same as Telegram approval)
+- **Auto-refresh** — updates every 10 seconds
+
+The dashboard starts automatically with `run_local.sh`. Configure the port with `DASHBOARD_PORT` env var (default: 8095).
+
 ### Monitor Progress
 
+**From the dashboard:**
+- Open http://localhost:8095 in your browser
+
+**From Telegram:**
+- `/status` — quick overview of what's happening
+- `/tasks` — see all tasks and their current state
+- `/task t-<id>` — drill into a specific task
+
+**From the terminal:**
 ```bash
 # Watch all agent logs in real-time
-docker-compose logs -f developer-agent qa-agent bot
+tail -f logs/*.log
 
-# Check Redis task queue
-docker exec -it <redis-container-id> redis-cli -a $REDIS_PASSWORD KEYS "*"
+# Or with docker compose
+docker-compose logs -f developer-agent qa-agent bot
 ```
 
 ---
 
 ## Error Handling & Monitoring
 
-- All agents write structured logs to stdout (captured by Docker)
+- All agents write structured logs to `logs/` (local) or stdout (Docker)
+- Every state transition is sent to you as a Telegram notification
 - If the Developer Agent fails, it publishes a `DEV_ERROR` event and Telegram notifies you
 - If QA fails to start the browser, it retries three times before publishing a `QA_ERROR` event
 - Maximum feedback loop iterations: **3 rounds** — after that, the task is flagged for manual review and you are notified via Telegram
+- Use `/status` to check queue lengths and active tasks at any time
+- Use `/task <id>` to inspect errors, QA feedback, and dev summaries for any task
 - Redis task status field tracks: `queued` → `dev_in_progress` → `qa_in_progress` → `awaiting_review` → `approved` → `deployed` | `rejected` | `failed`
 - Nothing is merged or deployed to production without explicit human approval via Telegram
+- Feature branches are automatically deleted (local + remote) after merge
 
 ---
 

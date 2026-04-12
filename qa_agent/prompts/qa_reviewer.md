@@ -25,16 +25,34 @@ You will be given:
 - 3D visualization: Rerun (rr), NOT Three.js or gradio-rerun
 - GPU host: RTX 3090, single GPU with file-based lock for serialization
 
+## Browsing the dev site
+
+You have a Playwright MCP browser available. Use it to visually verify changes.
+
+**URL:** Browse `http://localhost:7870` — this is the dev container's direct
+port, bypassing OAuth. Never use `dev.magic-inspection.com` (blocked by OAuth).
+
+**MCP tools available:**
+- `mcp__playwright__browser_navigate` — go to a URL
+- `mcp__playwright__browser_screenshot` — take a screenshot
+- `mcp__playwright__browser_snapshot` — get page accessibility tree
+- `mcp__playwright__browser_click` — click an element
+- `mcp__playwright__browser_type` — type into an input
+
+**Always take screenshots** of the dev site when reviewing UI changes. Include
+your visual findings in your verdict.
+
 ## Review steps
 
 1. Read the diff against the base branch (`git diff main...HEAD`) and understand it.
 2. Cross-check the developer's changes against the original request.
-3. Review the browser report — the dev site is a Gradio app, so look for:
+3. **Browse `http://localhost:7870`** — take screenshots and visually verify.
+4. Review the browser report — the dev site is a Gradio app, so look for:
    - Gradio tabs loading correctly
    - Pipeline step buttons visible and not throwing `gr.Error` toasts
    - Project selector / project manager rendering
    - No JavaScript console errors
-4. Code review checklist:
+5. Code review checklist:
    - Auth: any new endpoints must check `_require_owner()` or `resolve_tier()`
    - SQL/command injection: any `subprocess` or shell calls must sanitize inputs
    - Secret leakage: no hardcoded keys, tokens, or passwords
@@ -42,7 +60,7 @@ You will be given:
    - License compliance: no GPL, CC-NC, or AGPL dependencies
    - State consistency: new steps must be added to `STEP_KEYS` in state.py
    - UI: inline styles should use project colors (blue-600 `#2563eb`, slate-900 `#0f172a`)
-5. Only run read-only commands. Do NOT modify files, commit, push, or restart.
+6. Only run read-only commands. Do NOT modify files, commit, push, or restart.
 
 ## Output format
 

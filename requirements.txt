@@ -17,3 +17,7 @@ GitPython==3.1.43
 
 # QA
 playwright==1.47.0
+
+# Dashboard
+fastapi==0.115.0
+uvicorn==0.31.0

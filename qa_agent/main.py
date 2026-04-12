@@ -84,9 +84,21 @@ class WebAppProcess:
 async def _run_claude_review(user_prompt: str, system_prompt: str) -> str:
     options = ClaudeAgentOptions(
         system_prompt=system_prompt,
-        allowed_tools=["Read", "Glob", "Grep", "Bash"],
+        allowed_tools=["Read", "Glob", "Grep", "Bash",
+                        "mcp__playwright__browser_navigate",
+                        "mcp__playwright__browser_screenshot",
+                        "mcp__playwright__browser_click",
+                        "mcp__playwright__browser_type",
+                        "mcp__playwright__browser_snapshot"],
         cwd=REPO_PATH,
         permission_mode="default",
+        mcp_servers={
+            "playwright": {
+                "type": "stdio",
+                "command": "npx",
+                "args": ["@playwright/mcp", "--headless"],
+            },
+        },
     )
     parts: list[str] = []
     async for message in query(prompt=user_prompt, options=options):
@@ -157,6 +169,29 @@ async def _process_task(store: TaskStore, task: Task) -> None:
                 log(logger, "warning", "dev deploy failed (non-fatal)",
                     task_id=task.task_id, error=str(exc))
 
+        # Take a screenshot of the deployed dev site for the user to review.
+        screenshot_path = ""
+        try:
+            shot_dir = artifacts_dir / "review"
+            shot_dir.mkdir(parents=True, exist_ok=True)
+            shot_file = shot_dir / "dev_screenshot.png"
+            from playwright.async_api import async_playwright as _apw
+            async with _apw() as pw:
+                br = await pw.chromium.launch(headless=True)
+                pg = await br.new_page(viewport={"width": 1920, "height": 1080})
+                dev_url = os.environ.get(
+                    "DEV_DIRECT_URL", "http://localhost:7870")
+                await pg.goto(dev_url, wait_until="networkidle",
+                              timeout=30_000)
+                await pg.screenshot(path=str(shot_file), full_page=True)
+                await br.close()
+            screenshot_path = str(shot_file)
+            log(logger, "info", "review screenshot taken",
+                task_id=task.task_id, path=screenshot_path)
+        except Exception as exc:
+            log(logger, "warning", "failed to take review screenshot",
+                task_id=task.task_id, error=str(exc))
+
         task.status = TaskStatus.AWAITING_REVIEW.value
         task.qa_feedback = body
         await store.save(task)
@@ -164,7 +199,8 @@ async def _process_task(store: TaskStore, task: Task) -> None:
                                   {"summary": body[:1500]}))
         await store.publish(Event(EventType.AWAITING_REVIEW.value, task.task_id,
                                   {"branch": task.branch,
-                                   "summary": body[:1500]}))
+                                   "summary": body[:1500],
+                                   "screenshot": screenshot_path}))
         log(logger, "info", "task approved, awaiting human review",
             task_id=task.task_id)
         return

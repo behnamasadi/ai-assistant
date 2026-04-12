@@ -1,6 +1,9 @@
 """Subscribe to Redis events and push user-facing notifications to Telegram."""
 from __future__ import annotations
 
+import html as _html
+from pathlib import Path
+
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 
@@ -12,35 +15,38 @@ logger = get_logger("bot.notify")
 
 WEB_APP_URL = "https://dev.magic-inspection.com"
 
-# Human-readable templates for each event type. Missing keys are silently skipped.
+# HTML templates — safer than Markdown for agent-generated content.
 _TEMPLATES: dict[str, str] = {
-    EventType.DEV_STARTED.value: "🛠 *Dev agent started* on `{task_id}`",
+    EventType.DEV_STARTED.value: "🛠 <b>Dev agent started</b> on <code>{task_id}</code>",
     EventType.DEV_COMPLETE.value: (
-        "✅ *Dev agent finished* `{task_id}`\n"
-        "Branch: `{branch}`\n"
-        "Commit: `{commit}`\n\n"
+        "✅ <b>Dev agent finished</b> <code>{task_id}</code>\n"
+        "Branch: <code>{branch}</code>\n"
+        "Commit: <code>{commit}</code>\n\n"
         "{summary}"
     ),
-    EventType.DEV_ERROR.value: "❌ *Dev agent failed* `{task_id}`\n```\n{error}\n```",
-    EventType.QA_STARTED.value: "🔍 *QA agent started* on `{task_id}`",
-    EventType.QA_APPROVED.value: "🎉 *QA approved* `{task_id}`\n\n{summary}",
+    EventType.DEV_ERROR.value: "❌ <b>Dev agent failed</b> <code>{task_id}</code>\n<pre>{error}</pre>",
+    EventType.QA_STARTED.value: "🔍 <b>QA agent started</b> on <code>{task_id}</code>",
+    EventType.QA_APPROVED.value: "🎉 <b>QA approved</b> <code>{task_id}</code>\n\n{summary}",
     EventType.QA_FEEDBACK.value: (
-        "📝 *QA feedback* on `{task_id}` (iteration {iteration})\n\n{feedback}"
+        "📝 <b>QA feedback</b> on <code>{task_id}</code> (iteration {iteration})\n\n{feedback}"
     ),
-    EventType.QA_ERROR.value: "❌ *QA agent failed* `{task_id}`\n```\n{error}\n```",
+    EventType.QA_ERROR.value: "❌ <b>QA agent failed</b> <code>{task_id}</code>\n<pre>{error}</pre>",
     EventType.AWAITING_REVIEW.value: (
-        "🔎 *Ready for your review* `{task_id}`\n\n"
-        "Branch: `{branch}`\n"
+        "🔎 <b>Ready for your review</b> <code>{task_id}</code>\n\n"
+        "Branch: <code>{branch}</code>\n"
         f"Dev site: {WEB_APP_URL}\n\n"
         "Please review the changes and respond:"
     ),
-    EventType.MERGED.value: "🚀 *Merged to main* `{task_id}`\nCommit: `{commit}`",
-    EventType.DEPLOY_PROD.value: "🚀 *Deployed to production* `{task_id}`",
-    EventType.REJECTED.value: "❌ *Rejected* `{task_id}` — branch kept for rework.",
+    EventType.MERGED.value: "🚀 <b>Merged to main</b> <code>{task_id}</code>\nCommit: <code>{commit}</code>",
+    EventType.DEPLOY_PROD.value: "🚀 <b>Deployed to production</b> <code>{task_id}</code>",
+    EventType.REJECTED.value: "❌ <b>Rejected</b> <code>{task_id}</code> — branch kept for rework.",
     EventType.MANUAL_REVIEW.value: (
-        "⚠️ *Manual review required* `{task_id}` — max feedback iterations reached."
+        "⚠️ <b>Manual review required</b> <code>{task_id}</code> — max feedback iterations reached."
     ),
 }
+
+# Fields whose values come from agent output and may contain HTML-special chars.
+_ESCAPE_FIELDS = {"summary", "feedback", "error"}
 
 # Events that need inline keyboard buttons instead of plain text.
 _EVENTS_WITH_BUTTONS = {EventType.AWAITING_REVIEW.value}
@@ -50,10 +56,14 @@ def _render(event_type: str, payload: dict) -> str | None:
     template = _TEMPLATES.get(event_type)
     if not template:
         return None
+    safe = {
+        k: _html.escape(str(v)) if k in _ESCAPE_FIELDS else v
+        for k, v in payload.items()
+    }
     try:
-        return template.format(**payload)
+        return template.format(**safe)
     except KeyError:
-        return f"*{event_type}* — {payload}"
+        return f"<b>{_html.escape(event_type)}</b> — {_html.escape(str(payload))}"
 
 
 def _review_keyboard(task_id: str) -> InlineKeyboardMarkup:
@@ -82,10 +92,20 @@ async def run_notification_loop(bot: Bot, store: TaskStore) -> None:
         if not text:
             continue
         try:
+            # Send screenshot first if available (AWAITING_REVIEW events).
+            screenshot = event.payload.get("screenshot", "")
+            if screenshot and Path(screenshot).is_file():
+                with open(screenshot, "rb") as f:
+                    await bot.send_photo(
+                        chat_id=task.telegram_chat_id,
+                        photo=f,
+                        caption=f"Preview for {event.task_id}",
+                    )
+
             kwargs: dict = {
                 "chat_id": task.telegram_chat_id,
                 "text": text,
-                "parse_mode": ParseMode.MARKDOWN,
+                "parse_mode": ParseMode.HTML,
             }
             if event.event_type in _EVENTS_WITH_BUTTONS:
                 kwargs["reply_markup"] = _review_keyboard(event.task_id)

@@ -32,3 +32,4 @@ run/
 
 # OS
 .DS_Store
+.gstack/

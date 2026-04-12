@@ -57,13 +57,15 @@ else
   echo "  redis already reachable at ${REDIS_HOST}:${REDIS_PORT}"
 fi
 
-# 2. Agents + bot
+# 2. Agents + bot + dashboard
 start bot              python -m bot.main
 start developer_agent  python -m developer_agent.main
 start qa_agent         python -m qa_agent.main
+start dashboard        python -m bot.dashboard
 
 echo
 echo "✔ All services started."
 echo "  Logs:   tail -f logs/*.log"
 echo "  Status: scripts/healthcheck.sh"
+echo "  Dashboard: http://localhost:8095"
 echo "  Stop:   scripts/stop_local.sh"
