@@ -13,7 +13,8 @@ RUN curl -fsSL https://code.claude.com/install.sh | bash || true
 WORKDIR /app
 
 COPY developer_agent/requirements.txt ./requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --upgrade pip setuptools && \
+    pip install --no-cache-dir -r requirements.txt
 
 COPY shared /app/shared
 COPY developer_agent /app/developer_agent
