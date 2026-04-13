@@ -1,7 +1,7 @@
 """Login helpers for UI testing Playwright runs.
 
 Strategies (tried in order):
-  1. `basic_auth_login` — HTTP basic auth + Authentik OAuth (dev.magic-inspection.com)
+  1. `basic_auth_login` — HTTP basic auth + OAuth proxy
   2. `mock_login` — hits the dev-only /test-login endpoint
   3. `google_login` / `github_login` — drives a real OAuth flow with a test account
 """

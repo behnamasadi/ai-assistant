@@ -119,7 +119,7 @@ def _build_test_prompt(task: Task, report: BrowserReport) -> str:
         f"AUTOMATED BROWSER REPORT:\n{report.to_markdown()}\n\n"
         f"Branch: {task.branch}\n"
         f"Iteration: {task.iteration}\n\n"
-        "Now browse http://localhost:7870, test the feature manually, and produce your verdict."
+        f"Now browse {WEB_APP_URL}, test the feature manually, and produce your verdict."
     )
 
 
@@ -189,7 +189,7 @@ async def _process_task(store: TaskStore, task: Task) -> None:
             async with _apw() as pw_inst:
                 br = await pw_inst.chromium.launch(headless=True)
                 pg = await br.new_page(viewport={"width": 1920, "height": 1080})
-                dev_url = os.environ.get("DEV_DIRECT_URL", "http://localhost:7870")
+                dev_url = os.environ.get("DEV_DIRECT_URL", WEB_APP_URL)
                 await pg.goto(dev_url, wait_until="networkidle", timeout=30_000)
                 await pg.screenshot(path=str(shot_file), full_page=True)
                 await br.close()

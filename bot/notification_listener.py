@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import html as _html
+import os
 from pathlib import Path
 
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
@@ -13,7 +14,7 @@ from shared.task_schema import EventType
 
 logger = get_logger("bot.notify")
 
-WEB_APP_URL = "https://dev.magic-inspection.com"
+WEB_APP_URL = os.environ.get("WEB_APP_URL", "http://localhost:3000")
 
 # HTML templates — safer than Markdown for agent-generated content.
 _TEMPLATES: dict[str, str] = {

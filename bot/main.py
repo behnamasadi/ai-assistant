@@ -419,10 +419,7 @@ async def on_voice_callback(
 
 
 REPO_PATH = os.environ.get("GIT_REPO_PATH", "/workspace/project")
-DEPLOY_PROD_CMD = os.environ.get(
-    "DEPLOY_PROD_COMMAND",
-    "make -C /home/behnam/workspace/magic-inspection-colmap deploy-prod",
-)
+DEPLOY_PROD_CMD = os.environ.get("DEPLOY_PROD_COMMAND", "")
 
 
 async def on_review_callback(

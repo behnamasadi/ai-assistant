@@ -1,6 +1,6 @@
 # 🤖 Claude Code Multi-Agent System via Telegram
 
-A production-ready autonomous development pipeline powered by Claude Code agents, triggered by voice messages through Telegram. Send a voice message, and three specialized agents — a Developer, a Code Reviewer, and a UI Tester — collaborate to build, review, test, and deliver your feature automatically.
+A production-ready autonomous development pipeline powered by Claude Code agents, triggered by voice or text messages through Telegram. Works with **any repository** — just point it at your project via environment variables. Three specialized agents — a Developer, a Code Reviewer, and a UI Tester — collaborate to build, review, test, and deliver your feature automatically. Questions and conversations are answered directly without creating tasks.
 
 ---
 
@@ -40,7 +40,7 @@ This system allows you to act as a remote technical director. You send a voice o
 4. A **Code Reviewer** performs static analysis — security, architecture, correctness (gate 1)
 5. If code review passes, a **UI Tester** deploys to dev and runs Playwright browser tests with health scoring (gate 2)
 6. If either gate finds issues, feedback is sent back to the Developer Agent and the loop continues
-7. Once both gates pass, the branch is deployed to **dev.magic-inspection.com** for your review
+7. Once both gates pass, the branch is deployed to the **dev environment** for your review
 8. You receive a Telegram message with a screenshot and link — **you confirm or reject**
 9. On confirmation: the branch is merged to `main`, pushed, and deployed to **production**
 
@@ -94,7 +94,8 @@ Leave `ANTHROPIC_API_KEY` **empty** in `.env`. If it's set, the SDK will prefer 
 | `GIT_REMOTE_URL` | yes for push | SSH URL — `~/.ssh` is mounted so keys are reused |
 | `ANTHROPIC_API_KEY` | **no** (leave empty) | Only set if you want to bypass Max and bill API credit instead |
 | `WHISPER_MODEL` | optional | Local Whisper model size: `tiny`, `base` (default), `small`, `medium`, `large-v3`, `turbo` |
-| `OPENAI_API_KEY` | optional | Fallback for voice transcription if local Whisper fails. Not needed — local Whisper is free |
+| `OPENAI_API_KEY` | optional | Powers message triage (question vs task classification) and direct question answering. Also fallback for voice transcription if local Whisper fails |
+| `DEPLOY_PROD_COMMAND` | optional | Shell command to deploy to production after approval (e.g. `make deploy-prod`). Empty → skip deploy |
 | `TEST_GOOGLE_EMAIL` / `_PASSWORD` | optional | Only if your target app has Google OAuth and QA needs to log in |
 | `TEST_GITHUB_USERNAME` / `_PASSWORD` | optional | Same, for GitHub OAuth |
 | `WEB_APP_START_COMMAND` | optional | Only if QA should boot a live web app (e.g. `npm run dev`). Empty → code-review-only |
@@ -124,7 +125,7 @@ Then open Telegram, message your bot, e.g.:
 
 > *"Add a /health endpoint that returns `{status: ok}`."*
 
-You should see: task queued → dev agent creates `feature/t-<id>` branch → commits and pushes → code reviewer checks security/architecture → UI tester deploys and runs browser tests → dev↔review↔test feedback loop if needed → deploys to dev.magic-inspection.com → you get a Telegram message with screenshot asking to approve or reject → on approve, merged to main and deployed to prod. Every transition is sent to you as a Telegram notification.
+You should see: task queued → dev agent creates `feature/t-<id>` branch → commits and pushes → code reviewer checks security/architecture → UI tester deploys and runs browser tests → dev↔review↔test feedback loop if needed → deploys to dev → you get a Telegram message with screenshot asking to approve or reject → on approve, merged to main and deployed to prod. Every transition is sent to you as a Telegram notification.
 
 To stop everything: `./scripts/stop_local.sh`
 
@@ -186,8 +187,8 @@ If you just want to verify the pipeline end-to-end without Google/GitHub/web-app
                               ▼
               ┌───────────────────────────────┐
               │    DEPLOY TO DEV + NOTIFY     │
-              │  - Deploy branch to           │
-              │    dev.magic-inspection.com    │
+              │  - Deploy branch to dev env    │
+              │    ($WEB_APP_URL)              │
               │  - Take screenshot for review │
               │  - Send Telegram message with │
               │    screenshot + health score  │
@@ -196,8 +197,8 @@ If you just want to verify the pipeline end-to-end without Google/GitHub/web-app
                               ▼
               ┌───────────────────────────────┐
               │      YOU REVIEW ON DEV        │
-              │  - Open dev.magic-inspection  │
-              │    .com in your browser       │
+              │  - Open dev site in your      │
+              │    browser                    │
               │  - Test the feature yourself  │
               │  - Reply on Telegram:         │
               │    ✅ "approve" or ❌ "reject"│
@@ -229,7 +230,7 @@ If you just want to verify the pipeline end-to-end without Google/GitHub/web-app
 - Has Docker socket + GPU access + host networking for deployment tasks
 - Implements the requested feature or fix
 - Runs compile checks and tests after implementation
-- Browses `http://localhost:7870` to verify UI changes visually
+- Browses the dev URL (`WEB_APP_URL`) to verify UI changes visually
 - Commits and pushes the branch
 - Publishes a `DEV_COMPLETE` event → hands off to Code Reviewer
 - If feedback comes back from either gate, addresses every item before resubmitting
@@ -257,7 +258,7 @@ If you just want to verify the pipeline end-to-end without Google/GitHub/web-app
   - Takes screenshots as evidence
   - Produces a health score (0-100)
 - Produces a structured verdict: `PASSED` (health >= 70), `FEEDBACK`, or `BLOCKED`
-- If `PASSED` → deploys to dev.magic-inspection.com, takes final screenshot, notifies you for human review
+- If `PASSED` → deploys to dev, takes final screenshot, notifies you for human review
 - If `FEEDBACK` → sends back to Developer with screenshot evidence
 
 ---
@@ -287,10 +288,10 @@ The full lifecycle of a feature request, from Telegram to production:
 12. It deploys the branch to dev, runs automated Playwright smoke tests, then Claude-driven interactive UI testing
 13. It produces a health score (0-100) and takes screenshots as evidence
 14. If issues are found → `UI_TEST_FEEDBACK` event → Dev Agent fixes → back to step 7 (max 3 rounds total)
-15. If UI test passes → `UI_TEST_PASSED` event → deploys to dev.magic-inspection.com
+15. If UI test passes → `UI_TEST_PASSED` event → deploys to dev environment
 
 ### Phase 5 — Human Review (you)
-16. The branch is live on **dev.magic-inspection.com**
+16. The branch is live on the **dev environment**
 17. You receive a Telegram message with a screenshot and health score: _"Feature `t-<id>` is ready for review — reply **approve** or **reject**"_
 18. You open the dev site in your browser, test the feature manually
 19. You reply on Telegram:
@@ -300,7 +301,7 @@ The full lifecycle of a feature request, from Telegram to production:
 ### Phase 6 — Production Deploy
 20. The branch is merged to `main`
 21. Pushed to the remote repository
-22. Deployed to **production** (app.magic-inspection.com) via `make deploy-prod`
+22. Deployed to **production** via `DEPLOY_PROD_COMMAND`
 23. You receive a final Telegram message: _"Feature `t-<id>` deployed to production"_
 
 ### Key guarantees
@@ -642,7 +643,7 @@ services:
       - ${HOME}/.ssh:/root/.ssh:ro
       - ${HOME}/.claude:/root/.claude
       - ui_test_artifacts:/tmp/ui_test_artifacts
-    network_mode: host                               # Playwright → localhost:7870
+    network_mode: host                               # Playwright → dev app on localhost
     depends_on: { redis: { condition: service_healthy } }
 
 volumes:
@@ -831,9 +832,9 @@ The system follows this pipeline:
 4. **Code Review (gate 1)** — static analysis: security, architecture, correctness
 5. **UI Test (gate 2)** — deploys to dev, Playwright smoke tests, Claude-driven interactive testing, health score
 6. **Dev ↔ Review ↔ Test loop** — if either gate finds issues, feedback goes back to Dev Agent (up to 3 rounds)
-7. **Deploy to dev** — once both gates pass, the branch is deployed to dev.magic-inspection.com
+7. **Deploy to dev** — once both gates pass, the branch is deployed to the dev environment
 8. **You review** — you receive a Telegram message with screenshot + health score: _"Feature ready on dev — reply **approve** or **reject**"_
-9. **You approve** — the branch is merged to `main`, pushed to remote, and deployed to **production** (app.magic-inspection.com)
+9. **You approve** — the branch is merged to `main`, pushed to remote, and deployed to **production**
 10. **You reject** — the branch is kept but the task is closed; you can request changes in a follow-up message
 
 You stay in control: **nothing reaches production without your explicit approval on Telegram.**
@@ -851,6 +852,15 @@ The Telegram bot supports the following commands:
 
 Voice messages show the transcript with inline buttons (**Confirm** / **Edit** / **Cancel**) before queuing.
 When a feature is ready for review, you get inline buttons (**Approve & Deploy to Prod** / **Reject**).
+
+### Message Triage
+
+Text messages are automatically classified before routing:
+
+- **Questions** (e.g. "what does the auth middleware do?") → answered directly in Telegram via an LLM call, no task created
+- **Coding tasks** (e.g. "add a /health endpoint") → routed to the full developer→reviewer→tester pipeline
+
+Classification uses a fast model (`TRIAGE_MODEL`, default: `gpt-4o-mini`) and requires `OPENAI_API_KEY` to be set. Without an API key, all messages are treated as coding tasks (original behaviour).
 
 ### Web Dashboard
 
@@ -914,8 +924,8 @@ docker compose logs -f developer-agent code-reviewer ui-tester bot
 - [ ] Dedicated test GitHub account created
 - [ ] Test accounts registered in your web app
 - [ ] SSH keys mounted for git push access
-- [ ] Dev environment accessible: dev.magic-inspection.com loads and basic auth works
-- [ ] Prod deploy command works: `make deploy-prod` or equivalent
+- [ ] Dev environment accessible: `WEB_APP_URL` loads correctly
+- [ ] Prod deploy command works: `DEPLOY_PROD_COMMAND` runs successfully
 - [ ] End-to-end test: send a message → dev agent codes → code reviewer passes → UI tester passes → deployed to dev → you approve on Telegram → merged + deployed to prod
 
 ---

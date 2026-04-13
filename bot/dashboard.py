@@ -27,14 +27,8 @@ load_dotenv()
 app = FastAPI(title="AI Assistant Dashboard")
 
 REPO_PATH = os.environ.get("GIT_REPO_PATH", "/workspace/project")
-DEPLOY_PROD_CMD = os.environ.get(
-    "DEPLOY_PROD_COMMAND",
-    "make -C /home/behnam/workspace/magic-inspection-colmap deploy-prod",
-)
-REGRESSION_DATA_DIR = os.environ.get(
-    "REGRESSION_DATA_DIR",
-    "/home/behnam/projects/.regression",
-)
+DEPLOY_PROD_CMD = os.environ.get("DEPLOY_PROD_COMMAND", "")
+REGRESSION_DATA_DIR = os.environ.get("REGRESSION_DATA_DIR", "")
 
 _store: TaskStore | None = None
 

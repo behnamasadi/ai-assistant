@@ -1,7 +1,7 @@
 """Login helpers for QA Playwright runs.
 
 Strategies (tried in order):
-  1. `basic_auth_login` — HTTP basic auth + Authentik OAuth (dev.magic-inspection.com)
+  1. `basic_auth_login` — HTTP basic auth + OAuth proxy
   2. `mock_login` — hits the dev-only /test-login endpoint
   3. `google_login` / `github_login` — drives a real OAuth flow with a test account
 """
@@ -16,9 +16,8 @@ from playwright.async_api import Page
 async def basic_auth_login(page: Page, base_url: str) -> bool:
     """Log in through HTTP basic auth (Layer 1) + Authentik OAuth (Layer 2).
 
-    For dev.magic-inspection.com: nginx requires basic auth, then
-    oauth2-proxy checks for an Authentik session. We set the
-    Authorization header for basic auth, then drive the Authentik
+    If the target site uses nginx basic auth + an OAuth proxy, we set the
+    Authorization header for basic auth, then drive the OAuth
     login form if we're redirected to the sign-in page.
     """
     ba_user = os.environ.get("BASIC_AUTH_USER")

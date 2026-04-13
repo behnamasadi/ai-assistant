@@ -1,42 +1,41 @@
-# AI Assistant — Claude Code Multi-Agent for magic-inspection-colmap
+# AI Assistant — Claude Code Multi-Agent System
 
 ## What this project does
 
-This is the agent orchestration layer. It takes voice/text commands from
+This is a generic agent orchestration layer. It takes voice/text commands from
 Telegram, runs a Developer agent to implement features on a branch, then
-a QA agent reviews and tests against `https://dev.magic-inspection.com/`,
-looping until approved, then merges to `main`.
+a Code Reviewer and UI Tester review and test against the dev environment,
+looping until approved, then merges to `main` and deploys.
 
 ## Target project
 
-The agents develop **magic-inspection-colmap** — a Gradio + FastAPI 3D
-reconstruction pipeline for civil/industrial inspection.
-
-- **Repo:** `/home/behnam/workspace/magic-inspection-colmap`
-- **Prod:** `https://app.magic-inspection.com/` (port 7860)
-- **Dev:** `https://dev.magic-inspection.com/` (port 7870)
-- **GPU host:** 192.168.1.3 (this machine, RTX 3090)
-- **Pi (nginx):** 192.168.1.2
+The agents work on **any repository** configured via environment variables.
+Set `GIT_REPO_PATH` to the local path and `GIT_REMOTE_URL` to the remote.
+The dev site URL is configured via `WEB_APP_URL`.
 
 ## Running locally
 
 ```bash
 conda activate ai-assistant
-./scripts/run_local.sh      # starts redis + bot + dev agent + qa agent
+./scripts/run_local.sh      # starts redis + bot + dev agent + reviewers
 tail -f logs/*.log           # watch in real time
 ./scripts/stop_local.sh      # stop everything
 ```
 
-## Auth flow for dev site
+## Configuration
 
-Two layers:
-1. HTTP basic auth (nginx) — creds in `BASIC_AUTH_USER` / `BASIC_AUTH_PASSWORD`
-2. Authentik OAuth via oauth2-proxy — creds in `TEST_GOOGLE_EMAIL` / `TEST_GOOGLE_PASSWORD`
+All project-specific settings come from `.env`:
+
+| Variable | Purpose |
+|---|---|
+| `GIT_REPO_PATH` | Absolute path to the target repo |
+| `GIT_REMOTE_URL` | SSH URL for git push |
+| `WEB_APP_URL` | Dev site URL for testing |
+| `WEB_APP_START_COMMAND` | Command to start the dev server (optional) |
+| `DEPLOY_PROD_COMMAND` | Command to deploy to production (optional) |
 
 ## Key rules
 
 - Never add `Co-Authored-By` lines to commits
 - Only commercial-safe licenses (no GPL, CC-NC, AGPL)
-- Use Rerun for 3D visualization, not Three.js
-- Deploy dev: `make deploy-dev` (from magic-inspection-colmap)
-- Deploy prod: `make deploy-here` (only from `main` branch)
+- Agent prompts are generic — project-specific context comes from the target repo's own CLAUDE.md

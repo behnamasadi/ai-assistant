@@ -180,7 +180,7 @@ async def _process_task(store: TaskStore, task: Task) -> None:
                 br = await pw.chromium.launch(headless=True)
                 pg = await br.new_page(viewport={"width": 1920, "height": 1080})
                 dev_url = os.environ.get(
-                    "DEV_DIRECT_URL", "http://localhost:7870")
+                    "DEV_DIRECT_URL", WEB_APP_URL)
                 await pg.goto(dev_url, wait_until="networkidle",
                               timeout=30_000)
                 await pg.screenshot(path=str(shot_file), full_page=True)
