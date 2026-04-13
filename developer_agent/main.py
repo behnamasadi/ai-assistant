@@ -103,6 +103,31 @@ async def _process_task(store: TaskStore, task: Task) -> None:
         subject = task.prompt[:72]
     commit_msg = f"[{task.task_id}] {subject}"
     commit = git.commit_all(commit_msg)
+
+    if commit is None and summary:
+        # Plan-only or analysis task — no file changes but agent produced output.
+        # Skip code review and UI test; go straight to awaiting human review.
+        task.dev_summary = summary
+        task.status = TaskStatus.AWAITING_REVIEW.value
+        await store.save(task)
+        await store.log_event(task.task_id, make_entry(
+            "developer", "plan_only",
+            "No code changes — agent produced a plan/analysis. Skipping review gates.",
+            summary=summary[:500],
+        ))
+        await store.publish(Event(
+            EventType.DEV_COMPLETE.value, task.task_id,
+            {"branch": branch, "summary": summary[-1500:],
+             "plan_only": True, "iteration": task.iteration},
+        ))
+        await store.publish(Event(
+            EventType.AWAITING_REVIEW.value, task.task_id,
+            {"branch": branch, "plan_only": True},
+        ))
+        log(logger, "info", "plan-only task, awaiting human review",
+            task_id=task.task_id)
+        return
+
     if commit is None:
         raise RuntimeError("developer agent produced no file changes")
     git.push(branch)
