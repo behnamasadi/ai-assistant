@@ -6,6 +6,7 @@ from typing import AsyncIterator
 
 import redis.asyncio as redis
 
+from .event_log import EventEntry, event_log_key
 from .task_schema import (
     EVENT_CHANNEL,
     Event,
@@ -53,6 +54,7 @@ class TaskStore:
 
     async def delete(self, task_id: str) -> None:
         await self.r.hdel(TASK_HASH_KEY, task_id)
+        await self.delete_events(task_id)
 
     async def queue_lengths(self) -> dict[str, int]:
         dev = await self.r.llen(TASK_QUEUE_KEY)
@@ -88,6 +90,20 @@ class TaskStore:
 
     async def pop_qa(self, timeout: int = 0) -> str | None:
         return await self.pop_review(timeout=timeout)
+
+    # ── Persistent event log ──────────────────────────────────
+    async def log_event(self, task_id: str, entry: EventEntry) -> None:
+        """Append an event to the task's persistent timeline."""
+        await self.r.rpush(event_log_key(task_id), entry.to_json())
+
+    async def get_events(self, task_id: str) -> list[EventEntry]:
+        """Return the full event timeline for a task."""
+        raw_list = await self.r.lrange(event_log_key(task_id), 0, -1)
+        return [EventEntry.from_json(r) for r in raw_list]
+
+    async def delete_events(self, task_id: str) -> None:
+        """Delete the event log for a task."""
+        await self.r.delete(event_log_key(task_id))
 
     # ── Event bus ───────────────────────────────────────────────
     async def publish(self, event: Event) -> None:

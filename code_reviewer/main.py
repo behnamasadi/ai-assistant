@@ -8,6 +8,7 @@ from pathlib import Path
 from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, TextBlock, query
 from dotenv import load_dotenv
 
+from shared.event_log import make_entry
 from shared.git_manager import GitManager
 from shared.logger import get_logger, log
 from shared.redis_client import TaskStore
@@ -78,6 +79,11 @@ async def _process_task(store: TaskStore, task: Task) -> None:
     await store.save(task)
     await store.publish(Event(EventType.REVIEW_STARTED.value, task.task_id,
                               {"iteration": task.iteration}))
+    await store.log_event(task.task_id, make_entry(
+        "code_reviewer", "review_started",
+        f"Starting code review (iteration {task.iteration})",
+        iteration=task.iteration,
+    ))
 
     git = GitManager(REPO_PATH)
     git.ensure_feature_branch(task.branch or f"feature/{task.task_id}")
@@ -99,6 +105,11 @@ async def _process_task(store: TaskStore, task: Task) -> None:
 
         # Hand off to UI tester (second gate)
         await store.enqueue_ui_test(task.task_id)
+        await store.log_event(task.task_id, make_entry(
+            "code_reviewer", "review_verdict",
+            "Code review PASSED — forwarding to UI testing",
+            verdict="PASSED", feedback=body[:500],
+        ))
         await store.publish(Event(EventType.REVIEW_PASSED.value, task.task_id,
                                   {"summary": body[:1500]}))
         log(logger, "info", "code review passed, queued for UI testing",
@@ -110,6 +121,11 @@ async def _process_task(store: TaskStore, task: Task) -> None:
         task.status = TaskStatus.NEEDS_MANUAL_REVIEW.value
         task.review_feedback = body
         await store.save(task)
+        await store.log_event(task.task_id, make_entry(
+            "code_reviewer", "review_verdict",
+            f"Code review {verdict} — max iterations reached, needs manual review",
+            verdict=verdict, feedback=body[:500],
+        ))
         await store.publish(Event(EventType.MANUAL_REVIEW.value, task.task_id,
                                   {"feedback": body[:1500]}))
         log(logger, "warning", "max iterations reached at code review",
@@ -119,6 +135,11 @@ async def _process_task(store: TaskStore, task: Task) -> None:
     task.review_feedback = body
     task.status = TaskStatus.DEV_DONE.value  # back to dev
     await store.save(task)
+    await store.log_event(task.task_id, make_entry(
+        "code_reviewer", "review_verdict",
+        f"Code review {verdict} — sending feedback to developer",
+        verdict=verdict, feedback=body[:500],
+    ))
     await store.publish(Event(
         EventType.REVIEW_FEEDBACK.value,
         task.task_id,
@@ -149,6 +170,10 @@ async def _worker_loop() -> None:
                 task.status = TaskStatus.FAILED.value
                 task.error = str(exc)
                 await store.save(task)
+                await store.log_event(task_id, make_entry(
+                    "code_reviewer", "review_error",
+                    f"Code review failed: {str(exc)[:200]}",
+                ))
                 await store.publish(Event(
                     EventType.REVIEW_ERROR.value,
                     task_id,

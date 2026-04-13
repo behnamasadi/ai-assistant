@@ -1,6 +1,7 @@
 """Create tasks from user input and push them onto the dev agent queue."""
 from __future__ import annotations
 
+from shared.event_log import make_entry
 from shared.redis_client import TaskStore
 from shared.task_schema import Event, EventType, Task, TaskStatus
 
@@ -21,6 +22,11 @@ async def publish_task(
     task.status = TaskStatus.QUEUED.value
     await store.save(task)
     await store.enqueue_dev(task.task_id)
+    await store.log_event(task.task_id, make_entry(
+        "human", "task_created",
+        f"Task created: {prompt[:100]}",
+        prompt=prompt[:500],
+    ))
     await store.publish(
         Event(
             event_type=EventType.TASK_CREATED.value,

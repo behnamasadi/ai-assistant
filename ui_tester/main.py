@@ -14,6 +14,7 @@ from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, TextBlock, qu
 from dotenv import load_dotenv
 
 from ui_tester.browser_tester import BrowserReport, run_browser_smoke
+from shared.event_log import make_entry
 from shared.git_manager import GitManager
 from shared.logger import get_logger, log
 from shared.redis_client import TaskStore
@@ -151,6 +152,11 @@ async def _process_task(store: TaskStore, task: Task) -> None:
     await store.save(task)
     await store.publish(Event(EventType.UI_TEST_STARTED.value, task.task_id,
                               {"iteration": task.iteration}))
+    await store.log_event(task.task_id, make_entry(
+        "ui_tester", "test_started",
+        f"Starting UI testing (iteration {task.iteration})",
+        iteration=task.iteration,
+    ))
 
     git = GitManager(REPO_PATH)
     git.ensure_feature_branch(task.branch or f"feature/{task.task_id}")
@@ -196,6 +202,11 @@ async def _process_task(store: TaskStore, task: Task) -> None:
         task.ui_test_feedback = body
         task.health_score = health_score
         await store.save(task)
+        await store.log_event(task.task_id, make_entry(
+            "ui_tester", "test_verdict",
+            f"UI test PASSED (health: {health_score}/100) — awaiting human review",
+            verdict="PASSED", health_score=health_score, feedback=body[:500],
+        ))
         await store.publish(Event(EventType.UI_TEST_PASSED.value, task.task_id,
                                   {"summary": body[:1500], "health_score": health_score}))
         await store.publish(Event(EventType.AWAITING_REVIEW.value, task.task_id,
@@ -213,6 +224,11 @@ async def _process_task(store: TaskStore, task: Task) -> None:
         task.ui_test_feedback = body
         task.health_score = health_score
         await store.save(task)
+        await store.log_event(task.task_id, make_entry(
+            "ui_tester", "test_verdict",
+            f"UI test {verdict} (health: {health_score}/100) — max iterations, needs manual review",
+            verdict=verdict, health_score=health_score, feedback=body[:500],
+        ))
         await store.publish(Event(EventType.MANUAL_REVIEW.value, task.task_id,
                                   {"feedback": body[:1500]}))
         log(logger, "warning", "max iterations reached at UI testing",
@@ -223,6 +239,11 @@ async def _process_task(store: TaskStore, task: Task) -> None:
     task.health_score = health_score
     task.status = TaskStatus.DEV_DONE.value
     await store.save(task)
+    await store.log_event(task.task_id, make_entry(
+        "ui_tester", "test_verdict",
+        f"UI test {verdict} (health: {health_score}/100) — sending feedback to developer",
+        verdict=verdict, health_score=health_score, feedback=body[:500],
+    ))
     await store.publish(Event(
         EventType.UI_TEST_FEEDBACK.value,
         task.task_id,
@@ -254,6 +275,10 @@ async def _worker_loop() -> None:
                 task.status = TaskStatus.FAILED.value
                 task.error = str(exc)
                 await store.save(task)
+                await store.log_event(task_id, make_entry(
+                    "ui_tester", "test_error",
+                    f"UI test failed: {str(exc)[:200]}",
+                ))
                 await store.publish(Event(
                     EventType.UI_TEST_ERROR.value,
                     task_id,

@@ -8,6 +8,7 @@ from pathlib import Path
 from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, TextBlock, query
 from dotenv import load_dotenv
 
+from shared.event_log import make_entry
 from shared.git_manager import GitManager
 from shared.logger import get_logger, log
 from shared.redis_client import TaskStore
@@ -78,6 +79,11 @@ async def _process_task(store: TaskStore, task: Task) -> None:
     await store.save(task)
     await store.publish(Event(EventType.DEV_STARTED.value, task.task_id,
                               {"branch": branch, "iteration": task.iteration}))
+    await store.log_event(task.task_id, make_entry(
+        "developer", "dev_started",
+        f"Starting iteration {task.iteration} on branch {branch}",
+        iteration=task.iteration, branch=branch,
+    ))
 
     git = GitManager(REPO_PATH)
     git.ensure_feature_branch(branch)
@@ -108,6 +114,11 @@ async def _process_task(store: TaskStore, task: Task) -> None:
 
     # Hand off to code reviewer (first gate)
     await store.enqueue_review(task.task_id)
+    await store.log_event(task.task_id, make_entry(
+        "developer", "code_pushed",
+        f"Committed {commit[:10]} and pushed to {branch}",
+        commit=commit[:10], branch=branch, summary=summary[:500],
+    ))
     await store.publish(Event(
         EventType.DEV_COMPLETE.value,
         task.task_id,
@@ -142,6 +153,10 @@ async def _worker_loop() -> None:
                 task.status = TaskStatus.FAILED.value
                 task.error = str(exc)
                 await store.save(task)
+                await store.log_event(task_id, make_entry(
+                    "developer", "dev_error",
+                    f"Developer agent failed: {str(exc)[:200]}",
+                ))
                 await store.publish(Event(
                     EventType.DEV_ERROR.value,
                     task_id,

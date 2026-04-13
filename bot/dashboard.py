@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from shared.event_log import make_entry
 from shared.git_manager import GitManager
 from shared.redis_client import TaskStore
 from shared.task_schema import Event, EventType, Task, TaskStatus
@@ -75,6 +76,13 @@ async def api_task_detail(task_id: str):
     return asdict(task)
 
 
+@app.get("/api/dashboard/tasks/{task_id}/events")
+async def api_task_events(task_id: str):
+    store = _get_store()
+    events = await store.get_events(task_id)
+    return [asdict(e) for e in events]
+
+
 @app.post("/api/dashboard/tasks/{task_id}/approve")
 async def api_approve(task_id: str):
     store = _get_store()
@@ -89,6 +97,11 @@ async def api_approve(task_id: str):
     task.status = TaskStatus.APPROVED.value
     task.commit_hash = commit
     await store.save(task)
+    await store.log_event(task_id, make_entry(
+        "human", "approved",
+        f"Human approved and merged — commit {commit[:10]}",
+        commit=commit[:10],
+    ))
     await store.publish(Event(EventType.MERGED.value, task_id,
                               {"commit": commit[:10]}))
 
@@ -115,6 +128,9 @@ async def api_reject(task_id: str):
 
     task.status = TaskStatus.REJECTED.value
     await store.save(task)
+    await store.log_event(task_id, make_entry(
+        "human", "rejected", "Human rejected the task",
+    ))
     await store.publish(Event(EventType.REJECTED.value, task_id, {}))
     return {"status": "rejected"}
 
@@ -255,13 +271,45 @@ _DASHBOARD_HTML = """\
   .badge-queued { background: #334155; color: var(--muted); }
   .badge-dev_in_progress { background: #1e3a5f; color: #60a5fa; }
   .badge-dev_done { background: #14532d; color: var(--green); }
-  .badge-qa_in_progress { background: #422006; color: var(--orange); }
+  .badge-review_in_progress { background: #422006; color: var(--orange); }
+  .badge-review_done { background: #365314; color: #a3e635; }
+  .badge-ui_test_in_progress { background: #422006; color: var(--orange); }
   .badge-awaiting_review { background: #3b0764; color: var(--purple); }
   .badge-approved { background: #14532d; color: var(--green); }
   .badge-deployed { background: #052e16; color: #4ade80; }
   .badge-rejected { background: #450a0a; color: var(--red); }
   .badge-failed { background: #450a0a; color: var(--red); }
   .badge-needs_manual_review { background: #451a03; color: var(--yellow); }
+
+  .health-badge {
+    display: inline-block; padding: 2px 8px; border-radius: 10px;
+    font-size: 0.75rem; font-weight: 700; margin-left: 8px;
+  }
+  .health-good { background: #14532d; color: var(--green); }
+  .health-warn { background: #422006; color: var(--yellow); }
+  .health-bad { background: #450a0a; color: var(--red); }
+
+  .timeline { margin-top: 12px; padding-left: 20px; border-left: 2px solid var(--border); }
+  .tl-entry { position: relative; padding: 8px 0 8px 16px; font-size: 0.83rem; }
+  .tl-entry::before {
+    content: ''; position: absolute; left: -7px; top: 14px;
+    width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--border);
+    background: var(--surface);
+  }
+  .tl-entry.agent-developer::before { border-color: #60a5fa; background: #1e3a5f; }
+  .tl-entry.agent-code_reviewer::before { border-color: var(--orange); background: #422006; }
+  .tl-entry.agent-ui_tester::before { border-color: var(--purple); background: #3b0764; }
+  .tl-entry.agent-human::before { border-color: var(--green); background: #14532d; }
+  .tl-agent { font-weight: 600; text-transform: uppercase; font-size: 0.7rem; letter-spacing: 0.05em; }
+  .tl-agent.developer { color: #60a5fa; }
+  .tl-agent.code_reviewer { color: var(--orange); }
+  .tl-agent.ui_tester { color: var(--purple); }
+  .tl-agent.human { color: var(--green); }
+  .tl-summary { color: var(--text); }
+  .tl-time { color: var(--muted); font-size: 0.75rem; }
+  .tl-detail { color: var(--muted); font-size: 0.78rem; margin-top: 2px; }
+  .tl-toggle { color: var(--accent); cursor: pointer; font-size: 0.78rem; border: none; background: none; padding: 0; }
+  .tl-feedback { display: none; background: var(--bg); padding: 6px 8px; border-radius: 4px; font-size: 0.78rem; margin-top: 4px; white-space: pre-wrap; max-height: 200px; overflow-y: auto; }
 
   .task-details {
     display: none; margin-top: 16px; padding-top: 16px;
@@ -441,7 +489,7 @@ _DASHBOARD_HTML = """\
     return Math.floor(s/86400) + 'd ago';
   }
 
-  const ACTIVE = ['queued','dev_in_progress','dev_done','qa_in_progress','awaiting_review'];
+  const ACTIVE = ['queued','dev_in_progress','dev_done','review_in_progress','review_done','ui_test_in_progress','awaiting_review'];
 
   function filterTasks(list) {
     if (currentFilter === 'all') return list;
@@ -456,7 +504,8 @@ _DASHBOARD_HTML = """\
       document.getElementById('stats').innerHTML =
         '<div class="stat-card"><div class="value">' + d.total_tasks + '</div><div class="label">Total Tasks</div></div>' +
         '<div class="stat-card"><div class="value">' + d.queues.dev_queue + '</div><div class="label">Dev Queue</div></div>' +
-        '<div class="stat-card"><div class="value">' + d.queues.qa_queue + '</div><div class="label">QA Queue</div></div>' +
+        '<div class="stat-card"><div class="value">' + d.queues.review_queue + '</div><div class="label">Review Queue</div></div>' +
+        '<div class="stat-card"><div class="value">' + d.queues.ui_test_queue + '</div><div class="label">UI Test Queue</div></div>' +
         '<div class="stat-card"><div class="value">' + (d.by_status.awaiting_review||0) + '</div><div class="label">Awaiting Review</div></div>' +
         '<div class="stat-card"><div class="value">' + (d.by_status.deployed||0) + '</div><div class="label">Deployed</div></div>' +
         '<div class="stat-card"><div class="value">' + (d.by_status.failed||0) + '</div><div class="label">Failed</div></div>';
@@ -490,16 +539,25 @@ _DASHBOARD_HTML = """\
           '</div>';
       const devSummary = t.dev_summary
         ? '<div class="detail-label">Dev Summary</div><div class="detail-value"><pre>' + esc(t.dev_summary) + '</pre></div>' : '';
-      const qaFeedback = t.qa_feedback
-        ? '<div class="detail-label">QA Feedback</div><div class="detail-value"><pre>' + esc(t.qa_feedback) + '</pre></div>' : '';
+      const reviewFb = t.review_feedback
+        ? '<div class="detail-label">Code Review</div><div class="detail-value"><pre>' + esc(t.review_feedback) + '</pre></div>' : '';
+      const uiTestFb = t.ui_test_feedback
+        ? '<div class="detail-label">UI Test</div><div class="detail-value"><pre>' + esc(t.ui_test_feedback) + '</pre></div>' : '';
       const error = t.error
         ? '<div class="detail-label">Error</div><div class="detail-value"><pre style="color:var(--red)">' + esc(t.error) + '</pre></div>' : '';
+      // Health score badge
+      let healthBadge = '';
+      if (t.health_score != null) {
+        const hc = t.health_score >= 70 ? 'health-good' : t.health_score >= 40 ? 'health-warn' : 'health-bad';
+        healthBadge = '<span class="health-badge ' + hc + '">Health: ' + t.health_score + '</span>';
+      }
 
       return '<div class="task-card" onclick="this.classList.toggle(\\'' + 'expanded' + '\\')">' +
         '<div class="task-header">' +
           '<span class="task-id">' + t.task_id + '</span>' +
           '<span class="task-prompt" title="' + prompt.replace(/"/g,'&quot;') + '">' + promptShort + '</span>' +
           '<span class="badge badge-' + t.status + '">' + t.status.replace(/_/g,' ') + '</span>' +
+          healthBadge +
           '<span class="task-time">' + elapsed(t.updated_at) + '</span>' +
         '</div>' +
         '<div class="task-details">' +
@@ -510,8 +568,11 @@ _DASHBOARD_HTML = """\
             '<div class="detail-label">Commit</div><div class="detail-value"><code>' + (t.commit_hash ? t.commit_hash.slice(0,10) : 'none') + '</code></div>' +
             '<div class="detail-label">Created</div><div class="detail-value">' + fmtDate(t.created_at) + '</div>' +
             '<div class="detail-label">Updated</div><div class="detail-value">' + fmtDate(t.updated_at) + '</div>' +
-            devSummary + qaFeedback + error +
+            devSummary + reviewFb + uiTestFb + error +
           '</div>' +
+          '<div class="detail-label" style="margin-top:12px">Agent Timeline</div>' +
+          '<div class="timeline" id="tl-' + t.task_id + '"><span class="tl-time">Click to load...</span></div>' +
+          '<button class="btn-tool" style="margin-top:8px" onclick="event.stopPropagation();loadTimeline(\\'' + t.task_id + '\\')">Load Timeline</button>' +
           actions +
         '</div>' +
       '</div>';
@@ -689,6 +750,38 @@ _DASHBOARD_HTML = """\
     currentFilter = btn.dataset.filter;
     renderTasks();
   });
+
+  window.loadTimeline = async function(tid) {
+    const el = document.getElementById('tl-' + tid);
+    if (!el) return;
+    el.innerHTML = '<span class="tl-time">Loading...</span>';
+    try {
+      const r = await fetch('/api/dashboard/tasks/' + tid + '/events');
+      const events = await r.json();
+      if (!events.length) {
+        el.innerHTML = '<span class="tl-time">No events recorded yet</span>';
+        return;
+      }
+      el.innerHTML = events.map((ev, i) => {
+        const d = new Date(ev.ts * 1000);
+        const time = d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+        const date = d.toLocaleDateString();
+        const agent = ev.agent || 'system';
+        const fb = ev.detail && ev.detail.feedback ? ev.detail.feedback : '';
+        const fbHtml = fb
+          ? '<button class="tl-toggle" onclick="event.stopPropagation();var d=this.nextElementSibling;d.style.display=d.style.display===\\'block\\'?\\'none\\':\\'block\\'">show detail</button><div class="tl-feedback">' + esc(fb) + '</div>'
+          : '';
+        return '<div class="tl-entry agent-' + agent + '">' +
+          '<span class="tl-agent ' + agent + '">' + agent.replace(/_/g,' ') + '</span> ' +
+          '<span class="tl-time">' + date + ' ' + time + '</span><br>' +
+          '<span class="tl-summary">' + esc(ev.summary) + '</span>' +
+          fbHtml +
+        '</div>';
+      }).join('');
+    } catch(e) {
+      el.innerHTML = '<span class="tl-time">Failed to load timeline</span>';
+    }
+  };
 
   function loadAll() { loadStatus(); loadTasks(); }
   loadAll();
