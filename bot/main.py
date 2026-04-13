@@ -30,6 +30,8 @@ logger = get_logger("bot")
 
 ALLOWED_USER_ID = int(os.environ.get("TELEGRAM_ALLOWED_USER_ID", "0"))
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+TRIAGE_MODEL = os.environ.get("TRIAGE_MODEL", "gpt-4o-mini")
+CHAT_MODEL = os.environ.get("CHAT_MODEL", "gpt-4o-mini")
 
 
 def _authorized(update: Update) -> bool:
@@ -228,13 +230,101 @@ async def on_task_detail(
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
+async def _classify_message(text: str) -> str:
+    """Classify a message as 'question' or 'task' using a fast LLM call.
+
+    - question: general questions, status inquiries, explanations, advice
+    - task: requests to build, fix, change, deploy, or modify code
+    """
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        # No API key — default to task mode (original behaviour)
+        return "task"
+
+    from openai import AsyncOpenAI
+    client = AsyncOpenAI(api_key=api_key)
+    try:
+        resp = await client.chat.completions.create(
+            model=TRIAGE_MODEL,
+            temperature=0,
+            max_tokens=10,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You classify user messages. Reply with exactly one word:\n"
+                        "  question — if the user is asking a question, requesting an explanation, "
+                        "asking for advice, or having a conversation.\n"
+                        "  task — if the user is requesting code changes, feature implementation, "
+                        "bug fixes, deployments, refactoring, or any hands-on development work.\n"
+                        "Reply ONLY with 'question' or 'task'."
+                    ),
+                },
+                {"role": "user", "content": text},
+            ],
+        )
+        label = resp.choices[0].message.content.strip().lower()
+        if label not in ("question", "task"):
+            label = "task"
+        log(logger, "info", "message classified", label=label, preview=text[:60])
+        return label
+    except Exception as exc:
+        log(logger, "error", "triage classification failed, defaulting to task",
+            error=str(exc))
+        return "task"
+
+
+async def _answer_question(text: str) -> str:
+    """Answer a question directly using the chat model."""
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        return "Sorry, I can't answer questions right now (no API key configured)."
+
+    from openai import AsyncOpenAI
+    client = AsyncOpenAI(api_key=api_key)
+    try:
+        resp = await client.chat.completions.create(
+            model=CHAT_MODEL,
+            temperature=0.7,
+            max_tokens=1000,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a helpful software engineering assistant. "
+                        "Answer concisely and accurately. Use Markdown formatting. "
+                        "If the user seems to be requesting code changes rather than "
+                        "asking a question, tell them to rephrase as an explicit task "
+                        "request (e.g. 'build X', 'fix Y', 'add Z')."
+                    ),
+                },
+                {"role": "user", "content": text},
+            ],
+        )
+        return resp.choices[0].message.content.strip()
+    except Exception as exc:
+        log(logger, "error", "chat answer failed", error=str(exc))
+        return f"Sorry, I couldn't process your question: {exc}"
+
+
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _authorized(update) or not update.message or not update.message.text:
         return
+
+    text = update.message.text.strip()
+    label = await _classify_message(text)
+
+    if label == "question":
+        log(logger, "info", "answering question directly", preview=text[:60])
+        answer = await _answer_question(text)
+        await update.message.reply_text(answer, parse_mode="Markdown")
+        return
+
+    # Coding task — enter the full pipeline
     store: TaskStore = context.application.bot_data["store"]
     task = await publish_task(
         store,
-        prompt=update.message.text.strip(),
+        prompt=text,
         telegram_user_id=update.effective_user.id,
         telegram_chat_id=update.effective_chat.id,
         telegram_message_id=update.message.message_id,
