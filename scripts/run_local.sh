@@ -29,6 +29,19 @@ set +a
 
 mkdir -p logs run
 
+# Resolve the conda env Python and Redis binaries.
+CONDA_ENV="${CONDA_ENV:-ai-assistant}"
+CONDA_PREFIX="${CONDA_PREFIX:-$HOME/anaconda3/envs/$CONDA_ENV}"
+PYTHON="$CONDA_PREFIX/bin/python"
+REDIS_SERVER="$CONDA_PREFIX/bin/redis-server"
+REDIS_CLI="$CONDA_PREFIX/bin/redis-cli"
+
+if [[ ! -x "$PYTHON" ]]; then
+  echo "✖ Python not found at $PYTHON"
+  echo "  Activate the conda env or set CONDA_PREFIX."
+  exit 1
+fi
+
 start() {
   local name="$1"; shift
   local pidfile="run/${name}.pid"
@@ -45,24 +58,24 @@ start() {
 }
 
 # 1. Redis (conda-provided redis-server) — skip if already reachable.
-if ! redis-cli -h "${REDIS_HOST:-localhost}" -p "${REDIS_PORT:-6379}" \
-      ${REDIS_PASSWORD:+-a "$REDIS_PASSWORD"} ping >/dev/null 2>&1; then
+if ! "$REDIS_CLI" -h "${REDIS_HOST:-localhost}" -p "${REDIS_PORT:-6379}" \
+      ${REDIS_PASSWORD:+-a "$REDIS_PASSWORD"} --no-auth-warning ping >/dev/null 2>&1; then
   REDIS_ARGS=(--port "${REDIS_PORT:-6379}" --daemonize no)
   if [[ -n "${REDIS_PASSWORD:-}" ]]; then
     REDIS_ARGS+=(--requirepass "$REDIS_PASSWORD")
   fi
-  start redis redis-server "${REDIS_ARGS[@]}"
+  start redis "$REDIS_SERVER" "${REDIS_ARGS[@]}"
   sleep 1
 else
   echo "  redis already reachable at ${REDIS_HOST}:${REDIS_PORT}"
 fi
 
 # 2. Agents + bot + dashboard
-start bot              python -m bot.main
-start developer_agent  python -m developer_agent.main
-start code_reviewer    python -m code_reviewer.main
-start ui_tester        python -m ui_tester.main
-start dashboard        python -m bot.dashboard
+start bot              "$PYTHON" -m bot.main
+start developer_agent  "$PYTHON" -m developer_agent.main
+start code_reviewer    "$PYTHON" -m code_reviewer.main
+start ui_tester        "$PYTHON" -m ui_tester.main
+start dashboard        "$PYTHON" -m bot.dashboard
 
 echo
 echo "✔ All services started."
