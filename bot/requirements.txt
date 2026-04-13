@@ -5,4 +5,5 @@ openai==1.51.0
 openai-whisper==20250625
 fastapi==0.115.0
 uvicorn==0.31.0
+sse-starlette==2.2.1
 GitPython==3.1.43

@@ -15,6 +15,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
+from sse_starlette.sse import EventSourceResponse
 
 from shared.event_log import make_entry
 from shared.git_manager import GitManager
@@ -81,6 +82,33 @@ async def api_task_events(task_id: str):
     store = _get_store()
     events = await store.get_events(task_id)
     return [asdict(e) for e in events]
+
+
+@app.get("/api/dashboard/events/stream")
+async def api_event_stream(request: Request):
+    """SSE endpoint — streams real-time events from Redis pub/sub."""
+    store = _get_store()
+
+    async def _generate():
+        pubsub = store.r.pubsub()
+        await pubsub.subscribe("events")
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                msg = await pubsub.get_message(
+                    ignore_subscribe_messages=True, timeout=1.0,
+                )
+                if msg and msg.get("type") == "message":
+                    yield {"event": "agent_event", "data": msg["data"]}
+                else:
+                    # Send keepalive comment every ~1s to detect disconnects
+                    yield {"event": "ping", "data": ""}
+        finally:
+            await pubsub.unsubscribe("events")
+            await pubsub.aclose()
+
+    return EventSourceResponse(_generate())
 
 
 @app.post("/api/dashboard/tasks/{task_id}/approve")
@@ -425,14 +453,49 @@ _DASHBOARD_HTML = """\
     font-size: 0.8rem;
   }
   .reg-empty { color: var(--muted); font-style: italic; padding: 40px; text-align: center; }
+
+  /* Live connection indicator */
+  .conn-status { display: flex; align-items: center; gap: 6px; font-size: 0.82rem; }
+  .conn-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--muted); transition: background 0.3s;
+  }
+  .conn-dot.live { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .conn-dot.dead { background: var(--red); }
+  .conn-label { color: var(--muted); }
+  .conn-label.live { color: var(--green); }
+
+  /* Toast notification for real-time events */
+  .toast-container {
+    position: fixed; bottom: 20px; right: 20px; z-index: 1000;
+    display: flex; flex-direction: column-reverse; gap: 8px; max-width: 380px;
+  }
+  .toast {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 14px; font-size: 0.82rem; color: var(--text);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4); animation: slideIn 0.3s ease-out;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .toast .agent-dot {
+    width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+  }
+  .toast .agent-dot.developer { background: #60a5fa; }
+  .toast .agent-dot.code_reviewer { background: var(--orange); }
+  .toast .agent-dot.ui_tester { background: var(--purple); }
+  .toast .agent-dot.human { background: var(--green); }
+  @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
 </style>
 </head>
 <body>
 <div class="container">
   <header>
     <h1>AI Assistant Dashboard</h1>
-    <span id="auto-refresh">Auto-refresh: 10s</span>
+    <div class="conn-status">
+      <span class="conn-dot" id="conn-dot"></span>
+      <span class="conn-label" id="conn-label">Connecting...</span>
+    </div>
   </header>
+  <div class="toast-container" id="toasts"></div>
 
   <div class="tabs">
     <button class="tab-btn active" data-tab="tasks">Tasks</button>
@@ -552,7 +615,7 @@ _DASHBOARD_HTML = """\
         healthBadge = '<span class="health-badge ' + hc + '">Health: ' + t.health_score + '</span>';
       }
 
-      return '<div class="task-card" onclick="this.classList.toggle(\\'' + 'expanded' + '\\')">' +
+      return '<div class="task-card" onclick="toggleCard(this,\\'' + t.task_id + '\\')">' +
         '<div class="task-header">' +
           '<span class="task-id">' + t.task_id + '</span>' +
           '<span class="task-prompt" title="' + prompt.replace(/"/g,'&quot;') + '">' + promptShort + '</span>' +
@@ -571,8 +634,7 @@ _DASHBOARD_HTML = """\
             devSummary + reviewFb + uiTestFb + error +
           '</div>' +
           '<div class="detail-label" style="margin-top:12px">Agent Timeline</div>' +
-          '<div class="timeline" id="tl-' + t.task_id + '"><span class="tl-time">Click to load...</span></div>' +
-          '<button class="btn-tool" style="margin-top:8px" onclick="event.stopPropagation();loadTimeline(\\'' + t.task_id + '\\')">Load Timeline</button>' +
+          '<div class="timeline" id="tl-' + t.task_id + '"></div>' +
           actions +
         '</div>' +
       '</div>';
@@ -751,6 +813,12 @@ _DASHBOARD_HTML = """\
     renderTasks();
   });
 
+  window.toggleCard = function(el, tid) {
+    const wasExpanded = el.classList.contains('expanded');
+    el.classList.toggle('expanded');
+    if (!wasExpanded) loadTimeline(tid);
+  };
+
   window.loadTimeline = async function(tid) {
     const el = document.getElementById('tl-' + tid);
     if (!el) return;
@@ -784,8 +852,90 @@ _DASHBOARD_HTML = """\
   };
 
   function loadAll() { loadStatus(); loadTasks(); }
+
+  // ── SSE real-time updates with polling fallback ───────────
+  const dot = document.getElementById('conn-dot');
+  const lbl = document.getElementById('conn-label');
+  const toastBox = document.getElementById('toasts');
+  let sseConnected = false;
+  let pollTimer = null;
+
+  function setConn(live) {
+    sseConnected = live;
+    dot.className = 'conn-dot ' + (live ? 'live' : 'dead');
+    lbl.className = 'conn-label ' + (live ? 'live' : '');
+    lbl.textContent = live ? 'Live' : 'Polling (30s)';
+  }
+
+  function showToast(agent, text) {
+    const t = document.createElement('div');
+    t.className = 'toast';
+    t.innerHTML = '<span class="agent-dot ' + (agent||'') + '"></span>' + esc(text);
+    toastBox.appendChild(t);
+    setTimeout(() => t.remove(), 6000);
+    // Keep max 5 toasts
+    while (toastBox.children.length > 5) toastBox.firstChild.remove();
+  }
+
+  const EVENT_LABELS = {
+    TASK_CREATED: 'New task created',
+    DEV_STARTED: 'Developer started',
+    DEV_COMPLETE: 'Developer finished',
+    DEV_ERROR: 'Developer error',
+    REVIEW_STARTED: 'Code review started',
+    REVIEW_PASSED: 'Code review passed',
+    REVIEW_FEEDBACK: 'Code review feedback',
+    REVIEW_ERROR: 'Code review error',
+    UI_TEST_STARTED: 'UI testing started',
+    UI_TEST_PASSED: 'UI tests passed',
+    UI_TEST_FEEDBACK: 'UI test feedback',
+    UI_TEST_ERROR: 'UI test error',
+    AWAITING_REVIEW: 'Ready for human review',
+    MERGED: 'Merged to main',
+    DEPLOY_PROD: 'Deployed to production',
+    REJECTED: 'Rejected',
+  };
+
+  function agentFromEvent(type) {
+    if (type.startsWith('DEV_')) return 'developer';
+    if (type.startsWith('REVIEW_')) return 'code_reviewer';
+    if (type.startsWith('UI_TEST_')) return 'ui_tester';
+    return 'human';
+  }
+
+  function connectSSE() {
+    const es = new EventSource('/api/dashboard/events/stream');
+    es.addEventListener('agent_event', function(e) {
+      try {
+        const ev = JSON.parse(e.data);
+        const label = EVENT_LABELS[ev.event_type] || ev.event_type;
+        const agent = agentFromEvent(ev.event_type);
+        showToast(agent, ev.task_id.slice(0,14) + ': ' + label);
+        // Refresh data on any real event
+        loadAll();
+      } catch(_) {}
+    });
+    es.onopen = function() {
+      setConn(true);
+      // Reduce polling when SSE is connected
+      if (pollTimer) clearInterval(pollTimer);
+      pollTimer = setInterval(loadAll, 60000);
+    };
+    es.onerror = function() {
+      setConn(false);
+      es.close();
+      // Fall back to faster polling
+      if (pollTimer) clearInterval(pollTimer);
+      pollTimer = setInterval(loadAll, 30000);
+      // Retry SSE after 5s
+      setTimeout(connectSSE, 5000);
+    };
+  }
+
+  // Initial load, then start SSE
   loadAll();
-  setInterval(loadAll, 10000);
+  pollTimer = setInterval(loadAll, 30000);
+  connectSSE();
 })();
 </script>
 </body>
