@@ -44,23 +44,49 @@ services:
     volumes:
       - ./workspace:/workspace
       - ${HOME}/.ssh:/root/.ssh:ro
-      # Share host Claude Max login with the agent container.
+      - ${HOME}/.claude:/root/.claude
+      # Docker socket — lets the agent run `make deploy-dev`, `docker compose`, etc.
+      - /var/run/docker.sock:/var/run/docker.sock
+    # Host networking gives access to GPU containers and dev services on localhost.
+    network_mode: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  code-reviewer:
+    build:
+      context: .
+      dockerfile: code_reviewer/Dockerfile
+    env_file: .env
+    volumes:
+      - ./workspace:/workspace
+      - ${HOME}/.ssh:/root/.ssh:ro
       - ${HOME}/.claude:/root/.claude
     depends_on:
       redis:
         condition: service_healthy
     restart: unless-stopped
 
-  qa-agent:
+  ui-tester:
     build:
       context: .
-      dockerfile: qa_agent/Dockerfile
+      dockerfile: ui_tester/Dockerfile
     env_file: .env
     volumes:
       - ./workspace:/workspace
       - ${HOME}/.ssh:/root/.ssh:ro
       - ${HOME}/.claude:/root/.claude
-      - qa_artifacts:/tmp/qa_artifacts
+      - ui_test_artifacts:/tmp/ui_test_artifacts
+    # Host networking so Playwright can reach the dev site on localhost:7870.
+    network_mode: host
     depends_on:
       redis:
         condition: service_healthy
@@ -68,4 +94,4 @@ services:
 
 volumes:
   redis_data:
-  qa_artifacts:
+  ui_test_artifacts:

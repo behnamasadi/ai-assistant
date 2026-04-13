@@ -4,6 +4,22 @@ inspection (facades, roofs, cracks, construction sites).
 
 You are already on the correct feature branch. Never checkout or commit to `main`.
 
+## Principles
+
+**Boil the Lake:** When the complete implementation costs minutes more than a
+shortcut — do the complete thing. Handle edge cases, add the validation,
+write the test. "Good enough" is the wrong instinct when "complete" costs
+minutes more with AI assistance.
+
+**Search Before Building:** Before building infrastructure, unfamiliar patterns,
+or anything the runtime might have a built-in — search the codebase first.
+Check if the pattern you need already exists. Three minutes of reading beats
+thirty minutes of rebuilding.
+
+**Evidence Over Assumption:** Verify your changes work. Compile-check every
+modified file. Run tests. Browse the dev site for UI changes. Don't report
+success without evidence.
+
 ## Project architecture
 
 - **Gradio UI + FastAPI API** in `scripts/gradio_rerun_pipeline.py` (~2800 lines)
@@ -11,6 +27,8 @@ You are already on the correct feature branch. Never checkout or commit to `main
   `features.py`, `matching.py`, `reconstruction.py`, `bundle_adjustment.py`,
   `point_cloud_filtering.py`, `model_orientation.py`, `dense.py`,
   `gaussian_splatting.py`, `textured_mesh.py`, `export.py`
+- **Map quality** in `scripts/pipeline/map_quality.py` — bridge detection, spatial
+  outlier pruning, track length filter, sequential smoothness check
 - **State machine** in `scripts/pipeline/state.py` (`PipelineState`)
 - **Config** in `scripts/pipeline/config.py` (dataclasses per step)
 - **UI HTML** in `scripts/pipeline/ui_html.py` (inline HTML for result cards)
@@ -32,6 +50,27 @@ You are already on the correct feature branch. Never checkout or commit to `main
 - Rerun entities use `scene/` prefix for 3D, `images/` for 2D
 - Auth: oauth2-proxy sets `X-Forwarded-Email` / `X-Forwarded-Groups` headers
 - Owner isolation: `project.py` filters by `owner_email`; admins see all
+
+## Docker & Deployment
+
+You have Docker CLI access. The host Docker socket is mounted in your container.
+
+**Deploy to dev:**
+```bash
+cd /workspace/project && make deploy-dev
+```
+
+**Restart a specific service:**
+```bash
+cd /workspace/project && docker compose -f docker-compose.yml -f docker-compose.dev.yml restart web-app
+```
+
+**Check running containers:**
+```bash
+docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+```
+
+Only deploy when your changes are complete and verified. Never deploy broken code.
 
 ## Browsing the live dev site
 
@@ -74,7 +113,8 @@ port, bypassing OAuth. Never use `dev.magic-inspection.com` (blocked by OAuth).
 
 1. Run `python -m py_compile scripts/<modified_file>.py` for each changed file
 2. Run `cd scripts && python -m pytest tests/ -q` if tests exist for the module
-3. Do NOT run `git commit` or `git push` — the agent runner handles that
+3. Browse `http://localhost:7870` for any UI changes — take screenshots
+4. Do NOT run `git commit` or `git push` — the agent runner handles that
 
 Output your final summary in this exact format:
 
@@ -87,5 +127,6 @@ FILES:
 NOTES:
 <any new dependencies, follow-up items, or warnings — or "none">
 
-If the user message includes QA FEEDBACK from a previous iteration, prioritize
-addressing every item in that feedback before doing anything else.
+If the user message includes CODE REVIEW FEEDBACK or UI TEST FEEDBACK from a
+previous iteration, prioritize addressing every item in that feedback before
+doing anything else.

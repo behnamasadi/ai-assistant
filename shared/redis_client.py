@@ -1,4 +1,4 @@
-"""Async Redis helper: task queue, task state, and event bus."""
+"""Async Redis helper: task queues, task state, and event bus."""
 from __future__ import annotations
 
 import os
@@ -9,7 +9,8 @@ import redis.asyncio as redis
 from .task_schema import (
     EVENT_CHANNEL,
     Event,
-    QA_QUEUE_KEY,
+    REVIEW_QUEUE_KEY,
+    UI_TEST_QUEUE_KEY,
     TASK_HASH_KEY,
     TASK_QUEUE_KEY,
     Task,
@@ -55,23 +56,38 @@ class TaskStore:
 
     async def queue_lengths(self) -> dict[str, int]:
         dev = await self.r.llen(TASK_QUEUE_KEY)
-        qa = await self.r.llen(QA_QUEUE_KEY)
-        return {"dev_queue": dev, "qa_queue": qa}
+        review = await self.r.llen(REVIEW_QUEUE_KEY)
+        ui_test = await self.r.llen(UI_TEST_QUEUE_KEY)
+        return {"dev_queue": dev, "review_queue": review, "ui_test_queue": ui_test}
 
     # ── Queues ──────────────────────────────────────────────────
     async def enqueue_dev(self, task_id: str) -> None:
         await self.r.rpush(TASK_QUEUE_KEY, task_id)
 
-    async def enqueue_qa(self, task_id: str) -> None:
-        await self.r.rpush(QA_QUEUE_KEY, task_id)
+    async def enqueue_review(self, task_id: str) -> None:
+        await self.r.rpush(REVIEW_QUEUE_KEY, task_id)
+
+    async def enqueue_ui_test(self, task_id: str) -> None:
+        await self.r.rpush(UI_TEST_QUEUE_KEY, task_id)
 
     async def pop_dev(self, timeout: int = 0) -> str | None:
         result = await self.r.blpop(TASK_QUEUE_KEY, timeout=timeout)
         return result[1] if result else None
 
-    async def pop_qa(self, timeout: int = 0) -> str | None:
-        result = await self.r.blpop(QA_QUEUE_KEY, timeout=timeout)
+    async def pop_review(self, timeout: int = 0) -> str | None:
+        result = await self.r.blpop(REVIEW_QUEUE_KEY, timeout=timeout)
         return result[1] if result else None
+
+    async def pop_ui_test(self, timeout: int = 0) -> str | None:
+        result = await self.r.blpop(UI_TEST_QUEUE_KEY, timeout=timeout)
+        return result[1] if result else None
+
+    # Legacy aliases
+    async def enqueue_qa(self, task_id: str) -> None:
+        await self.enqueue_review(task_id)
+
+    async def pop_qa(self, timeout: int = 0) -> str | None:
+        return await self.pop_review(timeout=timeout)
 
     # ── Event bus ───────────────────────────────────────────────
     async def publish(self, event: Event) -> None:

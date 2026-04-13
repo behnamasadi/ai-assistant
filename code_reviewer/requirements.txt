@@ -1,0 +1,4 @@
+claude-agent-sdk==0.1.58
+redis==5.0.8
+python-dotenv==1.0.1
+GitPython==3.1.43

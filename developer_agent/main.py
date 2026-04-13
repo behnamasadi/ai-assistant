@@ -1,4 +1,4 @@
-"""Developer agent worker: pops tasks, runs Claude Agent SDK, commits, hands off to QA."""
+"""Developer agent worker: pops tasks, runs Claude Agent SDK, commits, hands off to code review."""
 from __future__ import annotations
 
 import asyncio
@@ -28,10 +28,15 @@ def _load_system_prompt() -> str:
 
 def _build_user_prompt(task: Task) -> str:
     parts = [f"TASK ID: {task.task_id}", f"REQUEST:\n{task.prompt}"]
-    if task.iteration > 0 and task.qa_feedback:
+    if task.iteration > 0 and task.review_feedback:
         parts.append(
-            "QA FEEDBACK from previous iteration — address every item:\n"
-            f"{task.qa_feedback}"
+            "CODE REVIEW FEEDBACK from previous iteration — address every item:\n"
+            f"{task.review_feedback}"
+        )
+    if task.iteration > 0 and task.ui_test_feedback:
+        parts.append(
+            "UI TEST FEEDBACK from previous iteration — address every item:\n"
+            f"{task.ui_test_feedback}"
         )
     return "\n\n".join(parts)
 
@@ -86,17 +91,13 @@ async def _process_task(store: TaskStore, task: Task) -> None:
         timeout=TIMEOUT,
     )
 
-    # Use the agent's summary as commit message (cleaner than raw voice transcript).
-    # Fall back to a truncated prompt if summary is empty.
     if summary:
-        # First line of summary as commit subject.
         subject = summary.split("\n")[0][:72]
     else:
         subject = task.prompt[:72]
     commit_msg = f"[{task.task_id}] {subject}"
     commit = git.commit_all(commit_msg)
     if commit is None:
-        # No changes produced — treat as an error so the user is notified.
         raise RuntimeError("developer agent produced no file changes")
     git.push(branch)
 
@@ -105,18 +106,20 @@ async def _process_task(store: TaskStore, task: Task) -> None:
     task.status = TaskStatus.DEV_DONE.value
     await store.save(task)
 
-    await store.enqueue_qa(task.task_id)
+    # Hand off to code reviewer (first gate)
+    await store.enqueue_review(task.task_id)
     await store.publish(Event(
         EventType.DEV_COMPLETE.value,
         task.task_id,
         {
             "branch": branch,
             "commit": commit[:10],
-            "summary": summary[-1500:],  # avoid giant Telegram messages
+            "summary": summary[-1500:],
             "iteration": task.iteration,
         },
     ))
-    log(logger, "info", "dev complete", task_id=task.task_id, commit=commit[:10])
+    log(logger, "info", "dev complete, queued for code review",
+        task_id=task.task_id, commit=commit[:10])
 
 
 async def _worker_loop() -> None:

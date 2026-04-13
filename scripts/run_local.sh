@@ -60,7 +60,8 @@ fi
 # 2. Agents + bot + dashboard
 start bot              python -m bot.main
 start developer_agent  python -m developer_agent.main
-start qa_agent         python -m qa_agent.main
+start code_reviewer    python -m code_reviewer.main
+start ui_tester        python -m ui_tester.main
 start dashboard        python -m bot.dashboard
 
 echo

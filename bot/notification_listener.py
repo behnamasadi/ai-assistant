@@ -17,6 +17,7 @@ WEB_APP_URL = "https://dev.magic-inspection.com"
 
 # HTML templates — safer than Markdown for agent-generated content.
 _TEMPLATES: dict[str, str] = {
+    # Developer agent
     EventType.DEV_STARTED.value: "🛠 <b>Dev agent started</b> on <code>{task_id}</code>",
     EventType.DEV_COMPLETE.value: (
         "✅ <b>Dev agent finished</b> <code>{task_id}</code>\n"
@@ -25,12 +26,31 @@ _TEMPLATES: dict[str, str] = {
         "{summary}"
     ),
     EventType.DEV_ERROR.value: "❌ <b>Dev agent failed</b> <code>{task_id}</code>\n<pre>{error}</pre>",
+    # Code reviewer (gate 1)
+    EventType.REVIEW_STARTED.value: "🔍 <b>Code review started</b> on <code>{task_id}</code>",
+    EventType.REVIEW_PASSED.value: "✅ <b>Code review passed</b> <code>{task_id}</code> → queued for UI testing",
+    EventType.REVIEW_FEEDBACK.value: (
+        "📝 <b>Code review feedback</b> on <code>{task_id}</code> (iteration {iteration})\n\n{feedback}"
+    ),
+    EventType.REVIEW_ERROR.value: "❌ <b>Code review failed</b> <code>{task_id}</code>\n<pre>{error}</pre>",
+    # UI tester (gate 2)
+    EventType.UI_TEST_STARTED.value: "🧪 <b>UI testing started</b> on <code>{task_id}</code>",
+    EventType.UI_TEST_PASSED.value: (
+        "🎉 <b>UI test passed</b> <code>{task_id}</code>\n"
+        "Health: {health_score}/100\n\n{summary}"
+    ),
+    EventType.UI_TEST_FEEDBACK.value: (
+        "📝 <b>UI test feedback</b> on <code>{task_id}</code> (iteration {iteration})\n\n{feedback}"
+    ),
+    EventType.UI_TEST_ERROR.value: "❌ <b>UI test failed</b> <code>{task_id}</code>\n<pre>{error}</pre>",
+    # Legacy QA events (backwards compat)
     EventType.QA_STARTED.value: "🔍 <b>QA agent started</b> on <code>{task_id}</code>",
     EventType.QA_APPROVED.value: "🎉 <b>QA approved</b> <code>{task_id}</code>\n\n{summary}",
     EventType.QA_FEEDBACK.value: (
         "📝 <b>QA feedback</b> on <code>{task_id}</code> (iteration {iteration})\n\n{feedback}"
     ),
     EventType.QA_ERROR.value: "❌ <b>QA agent failed</b> <code>{task_id}</code>\n<pre>{error}</pre>",
+    # Human review
     EventType.AWAITING_REVIEW.value: (
         "🔎 <b>Ready for your review</b> <code>{task_id}</code>\n\n"
         "Branch: <code>{branch}</code>\n"

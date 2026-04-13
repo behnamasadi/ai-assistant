@@ -1,0 +1,6 @@
+claude-agent-sdk==0.1.58
+redis==5.0.8
+GitPython==3.1.43
+playwright==1.47.0
+python-dotenv==1.0.1
+aiohttp==3.10.5
