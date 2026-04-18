@@ -18,11 +18,19 @@ from telegram.ext import (
 )
 
 from bot.notification_listener import run_notification_loop
-from bot.task_publisher import publish_task
+from bot.plan_coordinator import (
+    handle_plan_abort,
+    handle_plan_approve,
+    handle_plan_edit,
+    handle_plan_reject,
+    handle_plan_resume,
+    run_coordinator_loop,
+)
+from bot.task_publisher import publish_plan
 from shared.git_manager import GitManager
 from shared.logger import get_logger, log
 from shared.redis_client import TaskStore
-from shared.task_schema import Event, EventType, TaskStatus
+from shared.task_schema import Event, EventType, PlanStatus, TaskStatus
 
 load_dotenv()
 
@@ -124,14 +132,23 @@ async def on_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     active = [t for t in tasks if t.status in (
         TaskStatus.DEV_IN_PROGRESS.value,
-        TaskStatus.QA_IN_PROGRESS.value,
+        TaskStatus.REVIEW_IN_PROGRESS.value,
+        TaskStatus.UI_TEST_IN_PROGRESS.value,
         TaskStatus.AWAITING_REVIEW.value,
     )]
 
+    plans = await store.get_all_plans()
+    active_plan_id = await store.get_active_plan_id()
+
     lines = ["📊 *System Status*\n"]
+    lines.append(f"Planner queue: {queues['planner_queue']} pending")
     lines.append(f"Dev queue: {queues['dev_queue']} pending")
-    lines.append(f"QA queue: {queues['qa_queue']} pending")
+    lines.append(f"Review queue: {queues['review_queue']} pending")
+    lines.append(f"UI-test queue: {queues['ui_test_queue']} pending")
     lines.append(f"Total tasks: {len(tasks)}")
+    lines.append(f"Total plans: {len(plans)}")
+    if active_plan_id:
+        lines.append(f"Active plan: `{active_plan_id}`")
     lines.append("")
 
     if by_status:
@@ -307,11 +324,39 @@ async def _answer_question(text: str) -> str:
         return f"Sorry, I couldn't process your question: {exc}"
 
 
+async def _find_plan_for_reply(
+    store: TaskStore, reply_to_message_id: int,
+) -> str | None:
+    """Find the plan whose 'here is the plan' message the user replied to."""
+    plans = await store.get_all_plans()
+    for p in plans:
+        if p.plan_message_id == reply_to_message_id:
+            if p.status == PlanStatus.AWAITING_APPROVAL.value:
+                return p.plan_id
+    return None
+
+
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _authorized(update) or not update.message or not update.message.text:
         return
 
     text = update.message.text.strip()
+    store: TaskStore = context.application.bot_data["store"]
+
+    # Free-text edits to a pending plan: user replied to the plan message.
+    reply = update.message.reply_to_message
+    if reply is not None:
+        plan_id = await _find_plan_for_reply(store, reply.message_id)
+        if plan_id:
+            plan = await handle_plan_edit(store, plan_id, text)
+            if plan:
+                await update.message.reply_text(
+                    f"✏️ Got it — re-planning `{plan_id}` with your "
+                    "revision. I'll send the updated plan shortly.",
+                    parse_mode="Markdown",
+                )
+                return
+
     label = await _classify_message(text)
 
     if label == "question":
@@ -320,17 +365,19 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(answer, parse_mode="Markdown")
         return
 
-    # Coding task — enter the full pipeline
-    store: TaskStore = context.application.bot_data["store"]
-    task = await publish_task(
+    # Coding task — enter the planner first, then dev pipeline.
+    plan = await publish_plan(
         store,
         prompt=text,
         telegram_user_id=update.effective_user.id,
         telegram_chat_id=update.effective_chat.id,
         telegram_message_id=update.message.message_id,
     )
-    log(logger, "info", "queued task from text", task_id=task.task_id)
-    await update.message.reply_text(f"📥 Queued `{task.task_id}`", parse_mode="Markdown")
+    log(logger, "info", "queued plan from text", plan_id=plan.plan_id)
+    await update.message.reply_text(
+        f"🧩 Planning `{plan.plan_id}`…",
+        parse_mode="Markdown",
+    )
 
 
 async def on_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -403,7 +450,7 @@ async def on_voice_callback(
 
     if query.data == "voice_confirm":
         store: TaskStore = context.application.bot_data["store"]
-        task = await publish_task(
+        plan = await publish_plan(
             store,
             prompt=pending["transcript"],
             telegram_user_id=pending["user_id"],
@@ -411,9 +458,9 @@ async def on_voice_callback(
             telegram_message_id=pending["original_message_id"],
         )
         context.application.bot_data.pop(key, None)
-        log(logger, "info", "queued task from voice", task_id=task.task_id)
+        log(logger, "info", "queued plan from voice", plan_id=plan.plan_id)
         await query.edit_message_text(
-            f"📥 Queued `{task.task_id}`\n> {pending['transcript']}",
+            f"🧩 Planning `{plan.plan_id}`…\n> {pending['transcript']}",
             parse_mode="Markdown",
         )
 
@@ -515,9 +562,173 @@ async def on_review_callback(
             )
 
 
+async def on_plan_callback(
+    update: Update, context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """Handle Approve / Approve-trust / Reject buttons on plan messages."""
+    query = update.callback_query
+    if not query or not query.data:
+        return
+    await query.answer()
+
+    parts = query.data.split(":", 1)
+    if len(parts) != 2:
+        return
+    action, plan_id = parts[0], parts[1]
+
+    store: TaskStore = context.application.bot_data["store"]
+    plan = await store.get_plan(plan_id)
+    if not plan:
+        await query.edit_message_text(f"Plan `{plan_id}` not found.",
+                                      parse_mode="Markdown")
+        return
+
+    if action == "plan_reject":
+        if plan.status != PlanStatus.AWAITING_APPROVAL.value:
+            await query.edit_message_text(
+                f"Plan `{plan_id}` is {plan.status}, not awaiting approval.",
+                parse_mode="Markdown",
+            )
+            return
+        await handle_plan_reject(store, plan_id)
+        await query.edit_message_text(
+            f"❌ Plan `{plan_id}` rejected.",
+            parse_mode="Markdown",
+        )
+        return
+
+    if action in ("plan_approve_manual", "plan_approve_trust"):
+        if plan.status != PlanStatus.AWAITING_APPROVAL.value:
+            await query.edit_message_text(
+                f"Plan `{plan_id}` is {plan.status}, not awaiting approval.",
+                parse_mode="Markdown",
+            )
+            return
+        trust = action == "plan_approve_trust"
+        await handle_plan_approve(store, plan_id, trust_mode=trust)
+        mode_label = ("auto-merge" if trust else "review-each")
+        await query.edit_message_text(
+            f"✅ Plan `{plan_id}` approved ({mode_label}). Dispatching…",
+            parse_mode="Markdown",
+        )
+
+
+async def on_plans(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _authorized(update):
+        return
+    store: TaskStore = context.application.bot_data["store"]
+    plans = await store.get_all_plans()
+    if not plans:
+        await update.message.reply_text("No plans yet.")
+        return
+    plans.sort(key=lambda p: p.created_at, reverse=True)
+    from datetime import datetime
+    status_icons = {
+        "drafting": "🧩", "awaiting_approval": "❓",
+        "queued_to_run": "⏳", "running": "🏃",
+        "paused": "⏸", "complete": "✅",
+        "aborted": "❌", "error": "💥",
+    }
+    lines = ["🗂 *Plans* (newest first)\n"]
+    for p in plans[:20]:
+        ts = datetime.fromtimestamp(p.created_at).strftime("%m/%d %H:%M")
+        icon = status_icons.get(p.status, "•")
+        prompt_short = p.original_prompt[:40].replace("\n", " ")
+        done = sum(
+            1 for s in p.get_subtasks() if s.status == "done"
+        )
+        total = len(p.get_subtasks())
+        progress = f" [{done}/{total}]" if total else ""
+        lines.append(
+            f"{icon} `{p.plan_id}`{progress}\n"
+            f"  {ts} — _{prompt_short}_"
+        )
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def on_plan_detail(
+    update: Update, context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if not _authorized(update):
+        return
+    if not context.args:
+        await update.message.reply_text("Usage: /plan <plan-id>")
+        return
+    store: TaskStore = context.application.bot_data["store"]
+    plan = await store.get_plan(context.args[0])
+    if not plan:
+        await update.message.reply_text(
+            f"Plan `{context.args[0]}` not found.",
+            parse_mode="Markdown",
+        )
+        return
+    lines = [
+        f"🧩 *Plan* `{plan.plan_id}`",
+        f"*Status:* {plan.status}",
+        f"*Trust mode:* {plan.trust_mode}",
+        f"*Re-plans:* {plan.replan_count}",
+        f"\n*Original request:*\n_{plan.original_prompt[:500]}_",
+    ]
+    subtasks = plan.get_subtasks()
+    if subtasks:
+        lines.append("\n*Sub-tasks:*")
+        for s in subtasks:
+            tid = f" → `{s.task_id}`" if s.task_id else ""
+            lines.append(f"  [{s.index}] {s.status} — {s.title}{tid}")
+    if plan.error:
+        lines.append(f"\n*Error:* {plan.error[:300]}")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def on_resume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _authorized(update):
+        return
+    if not context.args:
+        await update.message.reply_text("Usage: /resume <plan-id>")
+        return
+    store: TaskStore = context.application.bot_data["store"]
+    plan = await handle_plan_resume(store, context.args[0])
+    if not plan:
+        await update.message.reply_text(
+            f"Plan `{context.args[0]}` can't be resumed "
+            "(not found or not paused).",
+            parse_mode="Markdown",
+        )
+        return
+    await update.message.reply_text(
+        f"▶️ Resuming `{plan.plan_id}` — re-planning before next sub-task.",
+        parse_mode="Markdown",
+    )
+
+
+async def on_abort(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _authorized(update):
+        return
+    if not context.args:
+        await update.message.reply_text("Usage: /abort <plan-id>")
+        return
+    store: TaskStore = context.application.bot_data["store"]
+    plan = await handle_plan_abort(store, context.args[0])
+    if not plan:
+        await update.message.reply_text(
+            f"Plan `{context.args[0]}` not found.",
+            parse_mode="Markdown",
+        )
+        return
+    await update.message.reply_text(
+        f"❌ Aborted `{plan.plan_id}`.",
+        parse_mode="Markdown",
+    )
+
+
 async def _run_listener(app: Application) -> None:
     store: TaskStore = app.bot_data["store"]
     await run_notification_loop(app.bot, store)
+
+
+async def _run_coordinator(app: Application) -> None:
+    store: TaskStore = app.bot_data["store"]
+    await run_coordinator_loop(app.bot, store)
 
 
 def main() -> None:
@@ -528,13 +739,19 @@ def main() -> None:
     app.add_handler(CommandHandler("status", on_status))
     app.add_handler(CommandHandler("tasks", on_tasks))
     app.add_handler(CommandHandler("task", on_task_detail))
+    app.add_handler(CommandHandler("plans", on_plans))
+    app.add_handler(CommandHandler("plan", on_plan_detail))
+    app.add_handler(CommandHandler("resume", on_resume))
+    app.add_handler(CommandHandler("abort", on_abort))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     app.add_handler(MessageHandler(filters.VOICE, on_voice))
     app.add_handler(CallbackQueryHandler(on_voice_callback, pattern=r"^voice_"))
     app.add_handler(CallbackQueryHandler(on_review_callback, pattern=r"^review_"))
+    app.add_handler(CallbackQueryHandler(on_plan_callback, pattern=r"^plan_"))
 
     async def _post_init(application: Application) -> None:
         application.create_task(_run_listener(application))
+        application.create_task(_run_coordinator(application))
 
     app.post_init = _post_init
     log(logger, "info", "telegram bot starting")

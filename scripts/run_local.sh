@@ -72,6 +72,7 @@ fi
 
 # 2. Agents + bot + dashboard
 start bot              "$PYTHON" -m bot.main
+start planner_agent    "$PYTHON" -m planner_agent.main
 start developer_agent  "$PYTHON" -m developer_agent.main
 start code_reviewer    "$PYTHON" -m code_reviewer.main
 start ui_tester        "$PYTHON" -m ui_tester.main
