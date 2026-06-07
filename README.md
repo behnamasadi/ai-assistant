@@ -22,6 +22,7 @@ A production-ready autonomous development pipeline powered by Claude Code agents
 - [Agent Prompt Templates](#agent-prompt-templates)
 - [Claude Code Skills & Prompt Collections](#claude-code-skills--prompt-collections)
 - [Running the System](#running-the-system)
+  - [Auto-Start on Boot (systemd)](#auto-start-on-boot-systemd)
 - [Bot Commands](#bot-commands)
 - [Workflow Walkthrough](#workflow-walkthrough-1)
 - [Error Handling & Monitoring](#error-handling--monitoring)
@@ -814,9 +815,61 @@ workflows.
 
 ### Start Everything
 
+**Docker:**
+
 ```bash
 docker-compose up -d
 ```
+
+**Local / conda (manual start):**
+
+```bash
+conda activate ai-assistant
+cd ~/workspace/ai-assistant
+./scripts/run_local.sh      # boots redis + bot + planner + dev + reviewer + ui-tester + dashboard
+./scripts/healthcheck.sh    # verify everything is up
+./scripts/stop_local.sh     # stop everything
+```
+
+### Auto-Start on Boot (systemd)
+
+To have the full fleet start automatically when the machine boots — no terminal,
+no login required — install the bundled user-level systemd unit.
+
+A ready-to-use template lives at [`deploy/ai-assistant.service`](deploy/ai-assistant.service).
+It runs `run_local.sh` on start and `stop_local.sh` on stop. Install it once:
+
+```bash
+# 1. Copy the unit into your user systemd directory
+mkdir -p ~/.config/systemd/user
+cp deploy/ai-assistant.service ~/.config/systemd/user/
+
+# 2. Reload systemd and enable it for boot
+systemctl --user daemon-reload
+systemctl --user enable --now ai-assistant.service
+
+# 3. (Required for start-at-boot without an active login) enable lingering
+loginctl enable-linger "$USER"
+```
+
+> The template uses the `%h` specifier for your home directory and assumes the
+> conda env is at `~/anaconda3/envs/ai-assistant`. If your node/conda paths
+> differ, edit the `Environment=PATH=` line before copying.
+
+**Manage the service:**
+
+```bash
+systemctl --user status ai-assistant      # check it
+systemctl --user restart ai-assistant      # restart the fleet
+systemctl --user stop ai-assistant         # stop it
+systemctl --user disable ai-assistant      # remove from boot
+journalctl --user -u ai-assistant -f       # service-level logs
+tail -f ~/workspace/ai-assistant/logs/*.log   # per-agent logs
+```
+
+> **Note:** the unit is `Type=oneshot`, so systemd launches the whole fleet at
+> boot but does not auto-restart an individual agent that crashes mid-run — use
+> `systemctl --user restart ai-assistant` (or reboot) to bring a dead agent back.
 
 ### Send a Task via Telegram
 

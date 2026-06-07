@@ -1,0 +1,26 @@
+[Unit]
+Description=AI Assistant — Telegram bot + agent fleet (redis, bot, planner, developer, reviewer, ui-tester, dashboard)
+# Wait for network so Telegram polling and git push work.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=%h/workspace/ai-assistant
+
+# Agents shell out to `claude`, `git`, `node`, and conda's python/redis — give them a full PATH.
+# Adjust the node path to your installed version if needed.
+Environment=PATH=%h/.local/bin:%h/anaconda3/envs/ai-assistant/bin:%h/.nvm/versions/node/v24.14.1/bin:/usr/local/bin:/usr/bin:/bin
+Environment=CONDA_PREFIX=%h/anaconda3/envs/ai-assistant
+Environment=CONDA_ENV=ai-assistant
+
+ExecStart=/usr/bin/bash %h/workspace/ai-assistant/scripts/run_local.sh
+ExecStop=/usr/bin/bash %h/workspace/ai-assistant/scripts/stop_local.sh
+
+# Let stop_local.sh shut the children down gracefully via pidfiles before the cgroup is reaped.
+KillMode=mixed
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

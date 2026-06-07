@@ -24,6 +24,8 @@ workspace/
 redis_data/
 logs/
 run/
+dump.rdb
+*.rdb
 
 # IDE
 .idea/
