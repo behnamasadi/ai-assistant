@@ -903,13 +903,16 @@ The Telegram bot supports the following commands:
 
 | Command | Description |
 |---|---|
-| `/start` | Welcome message and command list |
+| `/start` | Short welcome; points to `/help` |
+| `/help` | Full usage guide — read-only conversation vs. `/build`, and how to call status |
 | `/status` | Queue lengths (dev/QA pending), task counts by status, currently active tasks |
 | `/tasks` | List all tasks (newest first) with status icons and short prompts |
 | `/task <id>` | Full details for a specific task: status, branch, iteration, prompt, dev summary, QA feedback, errors, commit hash |
 | `/build <task>` | **Explicit build trigger.** The only guaranteed way to enter the developer pipeline — bypasses triage. Plain messages never build; use this when you actually want a commit |
 
-Voice messages show the transcript with inline buttons (**Confirm** / **Edit** / **Cancel**) before queuing.
+These commands are registered with Telegram on startup (`setMyCommands`), so they appear in the **/** autocomplete list and the **Menu** button — you always have the command list in front of you. Send `/help` any time for the full guide.
+
+Voice messages show the transcript with inline buttons (**💬 Just answer** / **🔨 Build it** / **✏️ Edit** / **❌ Cancel**). _Just answer_ stays read-only; only _Build it_ enters the pipeline.
 When a feature is ready for review, you get inline buttons (**Approve & Deploy to Prod** / **Reject**).
 
 ### Message Triage (conversation-first)

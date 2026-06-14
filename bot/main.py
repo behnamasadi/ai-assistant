@@ -116,20 +116,57 @@ async def _transcribe_voice(path: Path) -> str | None:
         return None
 
 
+# The command menu shown in Telegram's "/" list and Menu button. Registered with
+# setMyCommands on startup so you always see how to call status etc. from the app.
+BOT_COMMANDS: list[tuple[str, str]] = [
+    ("help", "How to use this bot — read-only vs build"),
+    ("status", "Queues + what's running right now"),
+    ("tasks", "List all tasks (newest first)"),
+    ("task", "<id> — details for one task"),
+    ("plans", "List all plans"),
+    ("plan", "<id> — details for one plan"),
+    ("build", "<task> — explicitly build & commit a change"),
+    ("resume", "<plan-id> — resume a paused plan"),
+    ("abort", "<plan-id> — abort a plan"),
+]
+
+HELP_TEXT = (
+    "🤖 *How to use me*\n\n"
+    "*Talk to me normally* and I stay *read-only* — I answer, explain, review, "
+    "or rate code by reading the real project. I will *never* create a branch or "
+    "commit unless you explicitly ask.\n\n"
+    "💬 *Just chatting / checking status* (no code changes):\n"
+    "• Ask anything — _\"what does this project do?\"_, _\"rate the main module\"_\n"
+    "• /status — queues + what's running now\n"
+    "• /tasks — all tasks (newest first)\n"
+    "• /task `<id>` — details for one task\n"
+    "• /plans, /plan `<id>` — plan overview / detail\n\n"
+    "🔨 *When you actually want a change committed:*\n"
+    "• /build `<what to build>` — e.g. `/build add a /health endpoint`\n"
+    "• On a *voice* message, tap *🔨 Build it* (or *💬 Just answer* to stay read-only)\n"
+    "• I still send you the plan to *approve* before anything is committed\n\n"
+    "🛠 *Managing builds:*\n"
+    "• /resume `<plan-id>` — resume a paused plan\n"
+    "• /abort `<plan-id>` — abort a plan\n\n"
+    "Nothing reaches production without your explicit approval."
+)
+
+
 async def on_start(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     if not _authorized(update):
         return
     await update.message.reply_text(
-        "👋 Talk to me normally — I'll answer, explain, review, or rate things "
-        "*without changing any code*.\n\n"
-        "When you actually want a change committed, say so explicitly with:\n"
-        "/build <what to build> — e.g. `/build add a /health endpoint`\n\n"
-        "Other commands:\n"
-        "/status — queue and agent status\n"
-        "/tasks — list all tasks\n"
-        "/task <id> — details for a specific task",
+        "👋 Hi! Talk to me normally — I'll answer, explain, review, or rate "
+        "things *without changing any code*. When you want a change committed, "
+        "use /build.\n\nSend /help for the full guide.",
         parse_mode="Markdown",
     )
+
+
+async def on_help(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _authorized(update):
+        return
+    await update.message.reply_text(HELP_TEXT, parse_mode="Markdown")
 
 
 async def on_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -828,6 +865,7 @@ def main() -> None:
     app.bot_data["store"] = TaskStore()
 
     app.add_handler(CommandHandler("start", on_start))
+    app.add_handler(CommandHandler("help", on_help))
     app.add_handler(CommandHandler("status", on_status))
     app.add_handler(CommandHandler("tasks", on_tasks))
     app.add_handler(CommandHandler("task", on_task_detail))
@@ -843,6 +881,17 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(on_plan_callback, pattern=r"^plan_"))
 
     async def _post_init(application: Application) -> None:
+        # Publish the command menu so the "/" list and Menu button always show
+        # how to call status, build, etc.
+        from telegram import BotCommand
+        try:
+            await application.bot.set_my_commands(
+                [BotCommand(c, d) for c, d in BOT_COMMANDS]
+            )
+            log(logger, "info", "registered telegram command menu",
+                count=len(BOT_COMMANDS))
+        except Exception as exc:
+            log(logger, "error", "failed to register command menu", error=str(exc))
         application.create_task(_run_listener(application))
         application.create_task(_run_coordinator(application))
 
