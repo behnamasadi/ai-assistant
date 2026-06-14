@@ -352,10 +352,16 @@ and need no changes.
 In short: **the summarizer is "final AI output → one sentence → voice → light
 pulse."** Only *how you obtain the final output* and *which model compresses it*
 are tied to Claude; swapping those two lines re-points the whole thing at any other
-AI assistant without touching the speech or the lighting. To generalize it
-properly, factor stages (1)–(3) behind a tiny adapter (e.g. an env var
-`AI_ENGINE=claude|ollama|openai` selecting the extract + summarize commands) and
-leave stages (4)–(5) as the shared, engine-independent backend.
+AI assistant without touching the speech or the lighting.
+
+> **Implemented (2026-06-14).** This is no longer just a design — the agnostic
+> pipeline lives in the repo at
+> [`scripts/ai-summary-tts/`](../../scripts/ai-summary-tts/). The summarize step is
+> behind an `AI_ENGINE=claude|openai|ollama` switch (default `claude`, identical to
+> the original), with TTS + envelope + lights as the shared backend. The live
+> `~/.claude/hooks/tts-summarize.sh` is now a thin shim that delegates to it; the
+> original Claude-only hook is backed up as `tts-summarize.sh.bak-2026-06-14`
+> (one-line revert in that script's README).
 
 ---
 
