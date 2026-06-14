@@ -159,9 +159,19 @@ async def inspect(question: str) -> str:
         can_use_tool=_readonly_gate,
     )
 
+    # The SDK requires streaming mode (an async iterable of messages) whenever a
+    # can_use_tool callback is set — a plain string prompt is rejected.
+    async def _prompt_stream():
+        yield {
+            "type": "user",
+            "message": {"role": "user", "content": question},
+            "parent_tool_use_id": None,
+            "session_id": "inspector",
+        }
+
     async def _run() -> str:
         parts: list[str] = []
-        async for message in query(prompt=question, options=options):
+        async for message in query(prompt=_prompt_stream(), options=options):
             if isinstance(message, AssistantMessage):
                 for block in message.content:
                     if isinstance(block, TextBlock):
