@@ -366,8 +366,18 @@ async def _answer_conversationally(text: str) -> str:
             log(logger, "info", "answering via project inspector", preview=text[:60])
             return await project_inspector.inspect(text)
     except Exception as exc:
-        log(logger, "error", "project inspector failed, using generic answer",
-            error=str(exc))
+        log(logger, "error", "project inspector failed", error=str(exc))
+        # The inspector is the intended path here; it just failed transiently
+        # (error or timeout). Use the repo-blind chat model only if it's actually
+        # configured — otherwise ask the user to retry rather than emitting a
+        # confusing 'no API key' message.
+        if os.environ.get("OPENAI_API_KEY"):
+            return await _answer_question(text)
+        return (
+            "⚠️ I couldn't read the project just now — the inspector errored or "
+            "timed out. Please try again in a moment.\n\n"
+            "Status commands still work: /status, /tasks, /task `<id>`."
+        )
     return await _answer_question(text)
 
 
@@ -375,7 +385,12 @@ async def _answer_question(text: str) -> str:
     """Generic, repo-blind fallback answer using the OpenAI chat model."""
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
-        return "Sorry, I can't answer questions right now (no API key configured)."
+        return (
+            "⚠️ I can't answer free-form questions right now — the project "
+            "inspector isn't available and no chat model is configured.\n\n"
+            "You can still use /status, /tasks, and /task `<id>`, or /build to "
+            "make a change."
+        )
 
     from openai import AsyncOpenAI
     client = AsyncOpenAI(api_key=api_key)
