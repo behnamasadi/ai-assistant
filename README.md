@@ -1,6 +1,8 @@
 # 🤖 Claude Code Multi-Agent System via Telegram
 
-A production-ready autonomous development pipeline powered by Claude Code agents, triggered by voice or text messages through Telegram. Works with **any repository** — just point it at your project via environment variables. Three specialized agents — a Developer, a Code Reviewer, and a UI Tester — collaborate to build, review, test, and deliver your feature automatically. Questions and conversations are answered directly without creating tasks.
+A production-ready autonomous development pipeline powered by Claude Code agents, triggered by voice or text messages through Telegram. Works with **any repository** — just point it at your project via environment variables. Three specialized agents — a Developer, a Code Reviewer, and a UI Tester — collaborate to build, review, test, and deliver your feature automatically.
+
+**Conversation-first and in your control.** By default the bot is read-only: a plain message is answered as a conversation — it can read your actual repo and explain, review, or rate the code — but it will **never** create a branch or commit. Code only changes when you ask explicitly with `/build <task>` (or the **🔨 Build it** button on voice), and even then the plan still waits for your approval before anything is committed. Set `BUILD_REQUIRES_TRIGGER=false` to restore the old auto-routing behaviour.
 
 ---
 
@@ -100,6 +102,8 @@ Leave `ANTHROPIC_API_KEY` **empty** in `.env`. If it's set, the SDK will prefer 
 | `TEST_GOOGLE_EMAIL` / `_PASSWORD` | optional | Only if your target app has Google OAuth and QA needs to log in |
 | `TEST_GITHUB_USERNAME` / `_PASSWORD` | optional | Same, for GitHub OAuth |
 | `WEB_APP_START_COMMAND` | optional | Only if QA should boot a live web app (e.g. `npm run dev`). Empty → code-review-only |
+| `BUILD_REQUIRES_TRIGGER` | optional | `true` (default): plain messages are conversation-only; only `/build` or 🔨 build. `false` restores auto-routing |
+| `INSPECT_TIMEOUT_SECONDS` | optional | Max seconds for a read-only repo inspection answer (default `180`) |
 
 ### Step 4 — Clone the target repo into `workspace/`
 
@@ -399,7 +403,8 @@ ai-assistant/
 ├── bot/
 │   ├── Dockerfile
 │   ├── requirements.txt
-│   ├── main.py                   # Telegram bot listener
+│   ├── main.py                   # Telegram bot listener (conversation-first routing)
+│   ├── project_inspector.py      # Read-only repo inspection (Claude SDK, no edits)
 │   ├── dashboard.py              # Web dashboard (FastAPI, port 8095)
 │   ├── task_publisher.py         # Pushes tasks to Redis
 │   └── notification_listener.py  # Listens for completion events
@@ -902,18 +907,32 @@ The Telegram bot supports the following commands:
 | `/status` | Queue lengths (dev/QA pending), task counts by status, currently active tasks |
 | `/tasks` | List all tasks (newest first) with status icons and short prompts |
 | `/task <id>` | Full details for a specific task: status, branch, iteration, prompt, dev summary, QA feedback, errors, commit hash |
+| `/build <task>` | **Explicit build trigger.** The only guaranteed way to enter the developer pipeline — bypasses triage. Plain messages never build; use this when you actually want a commit |
 
 Voice messages show the transcript with inline buttons (**Confirm** / **Edit** / **Cancel**) before queuing.
 When a feature is ready for review, you get inline buttons (**Approve & Deploy to Prod** / **Reject**).
 
-### Message Triage
+### Message Triage (conversation-first)
 
-Text messages are automatically classified before routing:
+The bot defaults to **conversation mode** — it will not change code unless you ask explicitly. Text messages are routed like this:
 
-- **Questions** (e.g. "what does the auth middleware do?") → answered directly in Telegram via an LLM call, no task created
-- **Coding tasks** (e.g. "add a /health endpoint") → routed to the full developer→reviewer→tester pipeline
+- **Conversation / questions** (e.g. "what does the auth middleware do?", "rate this file", "is X handled?") → answered read-only in Telegram. This is the default for anything that isn't an unmistakable build instruction.
+- **Explicit build requests** → routed to the full developer→reviewer→tester pipeline. A message reaches this path only when it's a clear instruction to change and commit code, or when you use the `/build` command.
 
-Classification uses a fast model (`TRIAGE_MODEL`, default: `gpt-4o-mini`) and requires `OPENAI_API_KEY` to be set. Without an API key, all messages are treated as coding tasks (original behaviour).
+Classification uses a fast model (`TRIAGE_MODEL`, default: `gpt-4o-mini`) with a bias toward conversation: anything ambiguous, exploratory, or review-like stays read-only. If `OPENAI_API_KEY` is unset or the classifier errors, the bot stays in conversation mode — so **nothing is ever built by accident**. Use `/build <task>` as the guaranteed, unambiguous trigger.
+
+Set `BUILD_REQUIRES_TRIGGER=false` to restore the old behaviour (classifier may auto-route messages into a build, and a missing key defaults to build).
+
+#### Read-only project inspection
+
+Conversation answers are grounded in your **actual repository**, not generic model knowledge. The bot runs a read-only inspector (`bot/project_inspector.py`) via the Claude Agent SDK against `GIT_REPO_PATH`, so it can read files, search the codebase, and inspect git history to answer real questions and review/rate code. The inspector is hard-locked read-only:
+
+- `Write` / `Edit` / `NotebookEdit` are disallowed.
+- A `can_use_tool` permission gate rejects any Bash command that isn't read-only (git log/status/diff/show…, ls, cat, grep, find), and rejects redirections and command substitution.
+
+If the Claude SDK or the repo path isn't available, it falls back to a generic (repo-blind) answer via the OpenAI chat model. Tune the inspection time budget with `INSPECT_TIMEOUT_SECONDS` (default 180).
+
+**Voice:** a transcribed voice message offers explicit **💬 Just answer** vs **🔨 Build it** buttons — _Just answer_ stays read-only; only _Build it_ enters the pipeline.
 
 ### Web Dashboard
 

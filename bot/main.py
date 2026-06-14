@@ -41,6 +41,15 @@ BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TRIAGE_MODEL = os.environ.get("TRIAGE_MODEL", "gpt-4o-mini")
 CHAT_MODEL = os.environ.get("CHAT_MODEL", "gpt-4o-mini")
 
+# Conversation-first safety. When True (default), a plain message NEVER enters the
+# build pipeline unless it is an explicit instruction to change/commit code (or you
+# use the /build command). Questions, reviews, "check this", "rate this" are answered
+# read-only — nothing is branched or committed. Set BUILD_REQUIRES_TRIGGER=false to
+# restore the old behaviour where the classifier could auto-route messages to a build.
+BUILD_REQUIRES_TRIGGER = os.environ.get(
+    "BUILD_REQUIRES_TRIGGER", "true",
+).strip().lower() not in ("false", "0", "no")
+
 
 def _authorized(update: Update) -> bool:
     if not update.effective_user:
@@ -111,11 +120,15 @@ async def on_start(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     if not _authorized(update):
         return
     await update.message.reply_text(
-        "👋 Send me a text or voice message describing what you want built.\n\n"
-        "Commands:\n"
+        "👋 Talk to me normally — I'll answer, explain, review, or rate things "
+        "*without changing any code*.\n\n"
+        "When you actually want a change committed, say so explicitly with:\n"
+        "/build <what to build> — e.g. `/build add a /health endpoint`\n\n"
+        "Other commands:\n"
         "/status — queue and agent status\n"
         "/tasks — list all tasks\n"
-        "/task <id> — details for a specific task"
+        "/task <id> — details for a specific task",
+        parse_mode="Markdown",
     )
 
 
@@ -250,13 +263,22 @@ async def on_task_detail(
 async def _classify_message(text: str) -> str:
     """Classify a message as 'question' or 'task' using a fast LLM call.
 
-    - question: general questions, status inquiries, explanations, advice
-    - task: requests to build, fix, change, deploy, or modify code
+    - question: anything read-only — questions, explanations, advice, reviews,
+      "check this", "rate this", or anything ambiguous. Answered, never built.
+    - task: an EXPLICIT instruction to modify code and commit it.
+
+    The default is deliberately biased toward 'question' so nothing is branched
+    or committed unless you clearly asked for it (or used /build). That bias is
+    only relaxed when BUILD_REQUIRES_TRIGGER is set to false.
     """
+    # Safe default: when we can't be sure, don't build.
+    safe_default = "task" if not BUILD_REQUIRES_TRIGGER else "question"
+
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
-        # No API key — default to task mode (original behaviour)
-        return "task"
+        # No API key — can't classify. Stay in conversation mode so nothing is
+        # built without the explicit /build command.
+        return safe_default
 
     from openai import AsyncOpenAI
     client = AsyncOpenAI(api_key=api_key)
@@ -269,11 +291,16 @@ async def _classify_message(text: str) -> str:
                 {
                     "role": "system",
                     "content": (
-                        "You classify user messages. Reply with exactly one word:\n"
-                        "  question — if the user is asking a question, requesting an explanation, "
-                        "asking for advice, or having a conversation.\n"
-                        "  task — if the user is requesting code changes, feature implementation, "
-                        "bug fixes, deployments, refactoring, or any hands-on development work.\n"
+                        "You decide whether a message is an EXPLICIT instruction to "
+                        "change the code and commit it. Reply with exactly one word:\n"
+                        "  task — ONLY when the user clearly tells you to implement, add, "
+                        "remove, fix, refactor, or change code and have it committed "
+                        "(e.g. 'add a /health endpoint', 'fix the login bug and commit', "
+                        "'make this change', 'go ahead and build it', 'apply that').\n"
+                        "  question — for everything else: questions, explanations, advice, "
+                        "code review, rating or assessing code, 'what do you think', "
+                        "'can you check…', 'look at…', or ANYTHING ambiguous or exploratory. "
+                        "When in doubt, answer 'question'.\n"
                         "Reply ONLY with 'question' or 'task'."
                     ),
                 },
@@ -282,17 +309,33 @@ async def _classify_message(text: str) -> str:
         )
         label = resp.choices[0].message.content.strip().lower()
         if label not in ("question", "task"):
-            label = "task"
+            label = safe_default
         log(logger, "info", "message classified", label=label, preview=text[:60])
         return label
     except Exception as exc:
-        log(logger, "error", "triage classification failed, defaulting to task",
+        log(logger, "error", "triage classification failed, staying in conversation",
             error=str(exc))
-        return "task"
+        return safe_default
+
+
+async def _answer_conversationally(text: str) -> str:
+    """Answer a message read-only. Prefer the project inspector, which reads the
+    real target repo (GIT_REPO_PATH) and can review/rate actual code; fall back
+    to the generic chat model if the inspector (Claude SDK + repo) isn't available.
+    Neither path ever changes or commits code."""
+    try:
+        from bot import project_inspector
+        if project_inspector.is_available():
+            log(logger, "info", "answering via project inspector", preview=text[:60])
+            return await project_inspector.inspect(text)
+    except Exception as exc:
+        log(logger, "error", "project inspector failed, using generic answer",
+            error=str(exc))
+    return await _answer_question(text)
 
 
 async def _answer_question(text: str) -> str:
-    """Answer a question directly using the chat model."""
+    """Generic, repo-blind fallback answer using the OpenAI chat model."""
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         return "Sorry, I can't answer questions right now (no API key configured)."
@@ -310,9 +353,11 @@ async def _answer_question(text: str) -> str:
                     "content": (
                         "You are a helpful software engineering assistant. "
                         "Answer concisely and accurately. Use Markdown formatting. "
-                        "If the user seems to be requesting code changes rather than "
-                        "asking a question, tell them to rephrase as an explicit task "
-                        "request (e.g. 'build X', 'fix Y', 'add Z')."
+                        "You are in read-only conversation mode — you never change "
+                        "or commit code here. If the user actually wants you to "
+                        "implement a change, tell them to send it with the /build "
+                        "command (e.g. '/build add a /health endpoint') so the "
+                        "developer pipeline picks it up."
                     ),
                 },
                 {"role": "user", "content": text},
@@ -361,7 +406,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if label == "question":
         log(logger, "info", "answering question directly", preview=text[:60])
-        answer = await _answer_question(text)
+        answer = await _answer_conversationally(text)
         await update.message.reply_text(answer, parse_mode="Markdown")
         return
 
@@ -376,6 +421,40 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     log(logger, "info", "queued plan from text", plan_id=plan.plan_id)
     await update.message.reply_text(
         f"🧩 Planning `{plan.plan_id}`…",
+        parse_mode="Markdown",
+    )
+
+
+async def on_build(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Explicit, unambiguous build trigger: /build <what to build>.
+
+    This is the only guaranteed path into the developer pipeline. It bypasses
+    triage entirely — if you typed /build, you meant to change the code.
+    """
+    if not _authorized(update) or not update.message:
+        return
+    text = " ".join(context.args).strip() if context.args else ""
+    if not text:
+        await update.message.reply_text(
+            "Usage: `/build <what to build>`\n\n"
+            "Example: `/build add a /health endpoint that returns {status: ok}`\n\n"
+            "Plain messages are answered as conversation and never change code — "
+            "use /build only when you actually want a commit.",
+            parse_mode="Markdown",
+        )
+        return
+    store: TaskStore = context.application.bot_data["store"]
+    plan = await publish_plan(
+        store,
+        prompt=text,
+        telegram_user_id=update.effective_user.id,
+        telegram_chat_id=update.effective_chat.id,
+        telegram_message_id=update.message.message_id,
+    )
+    log(logger, "info", "queued plan from /build command", plan_id=plan.plan_id)
+    await update.message.reply_text(
+        f"🧩 Planning `{plan.plan_id}`… I'll send the plan for your approval "
+        "before anything is committed.",
         parse_mode="Markdown",
     )
 
@@ -398,13 +477,17 @@ async def on_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("✅ Confirm", callback_data="voice_confirm"),
+            InlineKeyboardButton("💬 Just answer", callback_data="voice_answer"),
+            InlineKeyboardButton("🔨 Build it", callback_data="voice_build"),
+        ],
+        [
             InlineKeyboardButton("✏️ Edit", callback_data="voice_edit"),
             InlineKeyboardButton("❌ Cancel", callback_data="voice_cancel"),
-        ]
+        ],
     ])
     reply = await update.message.reply_text(
-        f"🎙 I heard:\n\n_{transcript}_\n\nSubmit this as a task?",
+        f"🎙 I heard:\n\n_{transcript}_\n\nWhat should I do? "
+        "_Just answer_ stays read-only; _Build it_ changes the code.",
         parse_mode="Markdown",
         reply_markup=keyboard,
     )
@@ -448,7 +531,16 @@ async def on_voice_callback(
         )
         return
 
-    if query.data == "voice_confirm":
+    if query.data == "voice_answer":
+        context.application.bot_data.pop(key, None)
+        answer = await _answer_conversationally(pending["transcript"])
+        await query.edit_message_text(
+            f"🎙 _{pending['transcript']}_\n\n{answer}",
+            parse_mode="Markdown",
+        )
+        return
+
+    if query.data in ("voice_build", "voice_confirm"):
         store: TaskStore = context.application.bot_data["store"]
         plan = await publish_plan(
             store,
@@ -739,6 +831,7 @@ def main() -> None:
     app.add_handler(CommandHandler("status", on_status))
     app.add_handler(CommandHandler("tasks", on_tasks))
     app.add_handler(CommandHandler("task", on_task_detail))
+    app.add_handler(CommandHandler("build", on_build))
     app.add_handler(CommandHandler("plans", on_plans))
     app.add_handler(CommandHandler("plan", on_plan_detail))
     app.add_handler(CommandHandler("resume", on_resume))

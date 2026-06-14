@@ -7,6 +7,26 @@ Telegram, runs a Developer agent to implement features on a branch, then
 a Code Reviewer and UI Tester review and test against the dev environment,
 looping until approved, then merges to `main` and deploys.
 
+## Conversation-first: nothing is built unless you ask explicitly
+
+By default the bot is **read-only**. A plain text or voice message is answered as
+a conversation — it can read the target repo and explain, review, or rate code,
+but it will **never** create a branch or commit. Code only changes when you ask
+explicitly:
+
+- Type `/build <what to build>` (the guaranteed trigger), or
+- Tap **🔨 Build it** on a transcribed voice message.
+
+Even then, the planner posts the plan to Telegram and waits for your approval tap
+before the developer agent commits anything. Two layers of consent.
+
+Read-only project inspection (`bot/project_inspector.py`) uses the Claude Agent
+SDK against `GIT_REPO_PATH` with a hard read-only guarantee: `Write`/`Edit` are
+disallowed and a `can_use_tool` gate rejects any non-read-only Bash command.
+
+Set `BUILD_REQUIRES_TRIGGER=false` to restore the old behaviour where the triage
+classifier could auto-route a message into a build.
+
 ## Target project
 
 The agents work on **any repository** configured via environment variables.
@@ -33,6 +53,8 @@ All project-specific settings come from `.env`:
 | `WEB_APP_URL` | Dev site URL for testing |
 | `WEB_APP_START_COMMAND` | Command to start the dev server (optional) |
 | `DEPLOY_PROD_COMMAND` | Command to deploy to production (optional) |
+| `BUILD_REQUIRES_TRIGGER` | `true` (default) = plain messages never build; only `/build`/🔨 do. `false` restores auto-routing |
+| `INSPECT_TIMEOUT_SECONDS` | Max seconds for a read-only repo inspection (default `180`) |
 
 ## Key rules
 
