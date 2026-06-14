@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="760" viewBox="0 0 960 760" font-family="DejaVu Sans, Arial, sans-serif">
+  <rect x="0" y="0" width="960" height="760" fill="#15171c"/>
+  <text x="30" y="42" fill="#ffffff" font-size="26" font-weight="bold">PC Case RGB Fan Map — host "server"</text>
+  <text x="30" y="66" fill="#9aa3b2" font-size="14">Mapped 2026-06-14 by colored-flash test. Schematic, not to scale.</text>
+
+  <!-- ===================== TOP FANS ===================== -->
+  <rect x="30" y="86" width="900" height="180" rx="10" fill="#1e2230" stroke="#3a4256" stroke-width="1.5"/>
+  <text x="50" y="116" fill="#ffffff" font-size="19" font-weight="bold">TOP FANS — Corsair Commander Core XT (USB)</text>
+  <text x="50" y="138" fill="#7CFC00" font-size="14">INDIVIDUALLY CONTROLLABLE — each fan = its own port</text>
+  <text x="50" y="246" fill="#9aa3b2" font-size="13">FRONT of case (I/O buttons)  &#8592; — — — — — &#8594;  REAR (window)</text>
+
+  <!-- top fan 1 = front = Port 6 (blue) -->
+  <circle cx="300" cy="180" r="44" fill="#0a1a3a" stroke="#3aa0ff" stroke-width="3"/>
+  <circle cx="300" cy="180" r="16" fill="#3aa0ff"/>
+  <text x="300" y="150" fill="#ffffff" font-size="14" font-weight="bold" text-anchor="middle">T1 front</text>
+  <text x="300" y="222" fill="#cfe6ff" font-size="13" text-anchor="middle">Port 6 (blue)</text>
+
+  <!-- top fan 2 = mid = Port 4 (red) -->
+  <circle cx="480" cy="180" r="44" fill="#3a0a0a" stroke="#ff4d4d" stroke-width="3"/>
+  <circle cx="480" cy="180" r="16" fill="#ff4d4d"/>
+  <text x="480" y="150" fill="#ffffff" font-size="14" font-weight="bold" text-anchor="middle">T2 mid</text>
+  <text x="480" y="222" fill="#ffd2d2" font-size="13" text-anchor="middle">Port 4 (red)</text>
+
+  <!-- top fan 3 = rear = Port 5 (green) -->
+  <circle cx="660" cy="180" r="44" fill="#0a3a14" stroke="#5ee06a" stroke-width="3"/>
+  <circle cx="660" cy="180" r="16" fill="#5ee06a"/>
+  <text x="660" y="150" fill="#ffffff" font-size="14" font-weight="bold" text-anchor="middle">T3 rear</text>
+  <text x="660" y="222" fill="#d2ffd9" font-size="13" text-anchor="middle">Port 5 (green)</text>
+
+  <!-- ===================== SIDE FANS ===================== -->
+  <rect x="30" y="286" width="900" height="160" rx="10" fill="#1e2230" stroke="#3a4256" stroke-width="1.5"/>
+  <text x="50" y="316" fill="#ffffff" font-size="19" font-weight="bold">SIDE FANS — be quiet! Light Wings (×3)</text>
+  <text x="50" y="338" fill="#ff9a4d" font-size="14">MIRRORED GROUP via Aura Addressable 3 — all 3 always show the SAME color</text>
+
+  <circle cx="300" cy="400" r="40" fill="#3a0a0a" stroke="#ff4d4d" stroke-width="3"/>
+  <text x="300" y="405" fill="#ffffff" font-size="14" font-weight="bold" text-anchor="middle">S1</text>
+  <circle cx="480" cy="400" r="40" fill="#3a0a0a" stroke="#ff4d4d" stroke-width="3"/>
+  <text x="480" y="405" fill="#ffffff" font-size="14" font-weight="bold" text-anchor="middle">S2</text>
+  <circle cx="660" cy="400" r="40" fill="#3a0a0a" stroke="#ff4d4d" stroke-width="3"/>
+  <text x="660" y="405" fill="#ffffff" font-size="14" font-weight="bold" text-anchor="middle">S3</text>
+  <path d="M260 400 H700" stroke="#ff9a4d" stroke-width="1.5" stroke-dasharray="5 4"/>
+  <text x="760" y="405" fill="#ff9a4d" font-size="13">= 1 zone (AA3)</text>
+
+  <!-- ===================== BOTTOM FANS ===================== -->
+  <rect x="30" y="466" width="900" height="160" rx="10" fill="#1e2230" stroke="#3a4256" stroke-width="1.5"/>
+  <text x="50" y="496" fill="#ffffff" font-size="19" font-weight="bold">BOTTOM FANS — be quiet! Light Wings (×3)</text>
+  <text x="50" y="518" fill="#ff9a4d" font-size="14">MIRRORED GROUP via Aura Addressable 2 — all 3 always show the SAME color</text>
+
+  <circle cx="300" cy="580" r="40" fill="#0a1430" stroke="#3a8cff" stroke-width="3"/>
+  <text x="300" y="585" fill="#ffffff" font-size="14" font-weight="bold" text-anchor="middle">B1</text>
+  <circle cx="480" cy="580" r="40" fill="#0a1430" stroke="#3a8cff" stroke-width="3"/>
+  <text x="480" y="585" fill="#ffffff" font-size="14" font-weight="bold" text-anchor="middle">B2</text>
+  <circle cx="660" cy="580" r="40" fill="#0a1430" stroke="#3a8cff" stroke-width="3"/>
+  <text x="660" y="585" fill="#ffffff" font-size="14" font-weight="bold" text-anchor="middle">B3</text>
+  <path d="M260 580 H700" stroke="#3a8cff" stroke-width="1.5" stroke-dasharray="5 4"/>
+  <text x="760" y="585" fill="#3a8cff" font-size="13">= 1 zone (AA2)</text>
+
+  <!-- ===================== FOOTER NOTES ===================== -->
+  <text x="30" y="664" fill="#9aa3b2" font-size="13">Also on this rig (not case fans):</text>
+  <text x="30" y="686" fill="#9aa3b2" font-size="13">• Aura Addressable 1 (AA1) → motherboard TUF logo / GPU-area accent.</text>
+  <text x="30" y="708" fill="#9aa3b2" font-size="13">• RGB RAM ×2 (Corsair Vengeance Pro) and GPU (RTX 3090) on i2c/SMBus — root only.</text>
+  <text x="30" y="730" fill="#9aa3b2" font-size="13">Control: top fans per-port (per-LED on Corsair); side/bottom one color per group. Use the `rgbfan` command.</text>
+</svg>
