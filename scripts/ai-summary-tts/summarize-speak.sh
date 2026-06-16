@@ -60,31 +60,65 @@ extract_final_text() {
   local input="$1" tpath=""
   tpath=$(printf '%s' "$input" | jq -r '.transcript_path // empty' 2>/dev/null)
   if [ -n "$tpath" ] && [ -f "$tpath" ]; then
-    # Claude mode: text of ONLY the very-last assistant entry in the JSONL.
+    # Claude mode: ALL assistant prose from the current turn (back to the last
+    # real user message). Concatenating the turn's narration + closing summary
+    # makes the spoken line describe *what happened*, and — crucially — it never
+    # comes up empty just because the turn ended on a tool call with no trailing
+    # text (the old "very-last assistant entry only" logic went silent then).
     python3 - "$tpath" <<'PY'
 import json, sys
 path = sys.argv[1]
-last = None
+entries = []
 try:
     with open(path) as f:
         for line in f:
             try:
-                obj = json.loads(line)
+                entries.append(json.loads(line))
             except Exception:
                 continue
-            if obj.get("type") == "assistant":
-                last = obj
 except Exception:
-    pass
-text = ""
-if last:
-    content = (last.get("message") or {}).get("content", [])
+    entries = []
+
+def text_of(obj):
+    content = (obj.get("message") or {}).get("content", [])
     if isinstance(content, str):
-        text = content.strip()
-    else:
-        parts = [c.get("text", "") for c in (content or [])
-                 if isinstance(c, dict) and c.get("type") == "text"]
-        text = "\n".join(parts).strip()
+        return content.strip()
+    parts = [c.get("text", "") for c in (content or [])
+             if isinstance(c, dict) and c.get("type") == "text"]
+    return "\n".join(p for p in parts if p).strip()
+
+def is_real_user(obj):
+    # A genuine user turn (not a tool_result, which is also role=user).
+    if obj.get("type") != "user":
+        return False
+    content = (obj.get("message") or {}).get("content", [])
+    if isinstance(content, str):
+        return bool(content.strip())
+    has_text = any(isinstance(c, dict) and c.get("type") == "text"
+                   for c in (content or []))
+    has_tool = any(isinstance(c, dict) and c.get("type") == "tool_result"
+                   for c in (content or []))
+    return has_text and not has_tool
+
+# Walk back from the end, gathering assistant prose until the last real user msg.
+chunks = []
+for obj in reversed(entries):
+    if is_real_user(obj):
+        break
+    if obj.get("type") == "assistant":
+        t = text_of(obj)
+        if t:
+            chunks.append(t)
+chunks.reverse()
+text = "\n".join(chunks).strip()
+# Fallback: the most recent assistant entry that has any text at all.
+if not text:
+    for obj in reversed(entries):
+        if obj.get("type") == "assistant":
+            t = text_of(obj)
+            if t:
+                text = t
+                break
 print(text)
 PY
   else
