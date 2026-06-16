@@ -23,6 +23,7 @@ A production-ready autonomous development pipeline powered by Claude Code agents
 - [Docker Setup](#docker-setup)
 - [Agent Prompt Templates](#agent-prompt-templates)
 - [Claude Code Skills & Prompt Collections](#claude-code-skills--prompt-collections)
+- [Spoken Summaries (Claude Stop-hook → speech)](#spoken-summaries-claude-stop-hook--speech)
 - [Running the System](#running-the-system)
   - [Auto-Start on Boot (systemd)](#auto-start-on-boot-systemd)
 - [Bot Commands](#bot-commands)
@@ -824,6 +825,67 @@ workflows.
 - [Piebald AI Claude Code System Prompts](https://github.com/Piebald-AI/claude-code-system-prompts) — system prompt templates
 - [Awesome Claude Code Subagents](https://github.com/VoltAgent/awesome-claude-code-subagents) — subagent patterns
 - [Claude Code QA Agents](https://github.com/darcyegb/ClaudeCodeAgents) — QA-focused agents
+
+---
+
+## Spoken Summaries (Claude Stop-hook → speech)
+
+Separate from the Telegram pipeline, this machine also **speaks a one-sentence
+summary of each Claude Code turn** out loud (and optionally pulses the case fans
+with the voice). This is wired into Claude with a **`Stop` hook** — the event
+Claude Code fires once when the assistant finishes responding.
+
+### How it's wired into Claude
+
+```
+~/.claude/settings.json                     ~/.claude/hooks/                scripts/ai-summary-tts/
+┌──────────────────────┐                    ┌─────────────────────┐        ┌──────────────────────┐
+│ "hooks": {           │   Stop event fires │ tts-summarize.sh    │  exec  │ summarize-speak.sh   │
+│   "Stop": [          │ ─ turn ends ─────▶ │ (thin shim, 1 line) │ ─────▶ │ (engine-agnostic)    │
+│     tts-summarize.sh │   {transcript_path}│                     │        │                      │
+│   ] }                │   on stdin         └─────────────────────┘        └──────────┬───────────┘
+└──────────────────────┘                                                              │
+                                                                                      ▼
+   (1) EXTRACT last assistant message  →  (2) SUMMARIZE to one sentence
+       (from transcript_path JSONL)         `claude -p --model haiku`   ─┐
+                                                                          ▼
+   (4) ffplay ◀── MP3 ◀── (3) SPEAK (edge-tts neural voice)              │
+                            └──▶ (5) loudness envelope ──▶ OpenRGB fans (if `talking` mode)
+```
+
+Three steps to add it to Claude yourself:
+
+1. **Register the hook** in `~/.claude/settings.json`:
+   ```json
+   { "hooks": { "Stop": [ { "hooks": [
+       { "type": "command", "command": "/home/<you>/.claude/hooks/tts-summarize.sh" }
+   ] } ] } }
+   ```
+2. **Drop a thin shim** at `~/.claude/hooks/tts-summarize.sh` that just `exec`s the
+   version-controlled script (so logic stays in the repo, not in `~/.claude`):
+   ```bash
+   #!/usr/bin/env bash
+   exec /home/<you>/workspace/ai-assistant/scripts/ai-summary-tts/summarize-speak.sh "$@"
+   ```
+3. **Install the deps** the script shells out to: `edge-tts` (neural TTS) + `ffplay`
+   (playback); `jq`/`python3` for transcript parsing.
+
+The summarizer speaks the **final answer compressed to one sentence**, not the reply
+read word-by-word — you hear *"Merged the fix and deployed to production"*, not the
+whole multi-paragraph turn. It's single-instance (`flock`), deduped (SHA-1 of the
+reply), and disabled with `touch ~/.claude/tts-disabled`.
+
+### Engine-agnostic — not Claude-only
+
+Only the *summarize* step is engine-specific; switch it with one env var
+(`AI_ENGINE=claude|openai|ollama`, default `claude`). TTS and the light envelope are
+shared across engines. Full design + swap-points:
+
+- **[`scripts/ai-summary-tts/README.md`](scripts/ai-summary-tts/README.md)** — the
+  engine-agnostic implementation, config knobs, and how to point it at any assistant.
+- **[`docs/openrgb/openrgb-setup-notes.md`](docs/openrgb/openrgb-setup-notes.md)**
+  (*"The AI summary → speech → lights pipeline"*) — the end-to-end design, the
+  Claude `Stop`-hook flow, and the loudness-envelope → fan-brightness link.
 
 ---
 
