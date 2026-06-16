@@ -1,0 +1,16 @@
+[Unit]
+Description=AI Assistant watchdog — re-run run_local.sh to resurrect any crashed process (bot/agents)
+After=network-online.target ai-assistant.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/workspace/ai-assistant
+
+# Same PATH/conda env as the main unit so claude, git, node, conda python/redis resolve.
+Environment=PATH=%h/.local/bin:%h/anaconda3/envs/ai-assistant/bin:%h/.nvm/versions/node/v24.14.1/bin:/usr/local/bin:/usr/bin:/bin
+Environment=CONDA_PREFIX=%h/anaconda3/envs/ai-assistant
+Environment=CONDA_ENV=ai-assistant
+
+# run_local.sh is idempotent: it leaves live processes alone and only starts dead ones.
+ExecStart=/usr/bin/bash %h/workspace/ai-assistant/scripts/run_local.sh

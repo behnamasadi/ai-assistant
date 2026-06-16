@@ -1,0 +1,12 @@
+[Unit]
+Description=AI Assistant watchdog timer — check the fleet every 2 min and restart anything dead
+
+[Timer]
+# First run shortly after boot (covers the DNS-not-ready-yet race), then every 2 min.
+OnBootSec=90s
+OnUnitActiveSec=2min
+AccuracySec=15s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

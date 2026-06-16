@@ -153,12 +153,23 @@ If you just want to verify the pipeline end-to-end without Google/GitHub/web-app
 │                  TELEGRAM BOT SERVICE                       │
 │  - Listens for messages (voice + text)                      │
 │  - Transcribes voice via local Whisper (GPU, free)          │
-│  - Parses intent and creates task object                    │
-│  - Pushes task to Redis queue                               │
+│  - Routes by intent — conversation-first (split below)      │
 │  - Listens for completion events → sends reply to you       │
 └───────────────────────────┬─────────────────────────────────┘
                             │
-                            ▼
+       plain message ◄──────┴──────► /build <task>  or  🔨 Build it
+       (default — read-only)            (explicit build trigger)
+             │                                   │
+             ▼                                   ▼
+┌────────────────────────────┐    ┌────────────────────────────┐
+│  READ-ONLY INSPECTOR       │    │      PLANNER AGENT         │
+│  (bot/project_inspector.py)│    │  - Drafts an implementation│
+│  - Claude Agent SDK → CLI  │    │    plan for the request    │
+│  - Reads real GIT_REPO_PATH│    │  - Posts the plan to you   │
+│  - Explains / reviews / rates│  │  - WAITS for approval tap  │
+│  - NEVER branches/commits  │    └──────────────┬─────────────┘
+└──────────────┬─────────────┘                   │ ✅ you approve
+       answer to Telegram                        ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                     REDIS (Message Broker)                  │
 │  - 3 task queues: dev, review, ui_test                      │
@@ -872,9 +883,30 @@ journalctl --user -u ai-assistant -f       # service-level logs
 tail -f ~/workspace/ai-assistant/logs/*.log   # per-agent logs
 ```
 
-> **Note:** the unit is `Type=oneshot`, so systemd launches the whole fleet at
-> boot but does not auto-restart an individual agent that crashes mid-run — use
-> `systemctl --user restart ai-assistant` (or reboot) to bring a dead agent back.
+> **Note:** the main unit is `Type=oneshot`, so systemd launches the whole fleet
+> at boot but does not itself watch the individual processes afterwards. The
+> watchdog timer below covers that gap — install it too.
+
+#### Watchdog — auto-restart crashed agents (recommended)
+
+The Telegram bot in particular can die at boot if DNS for `api.telegram.org`
+isn't ready yet when it starts (a `Name or service not known` crash), and the
+oneshot unit won't bring it back. The bundled watchdog
+([`deploy/ai-assistant-watchdog.service`](deploy/ai-assistant-watchdog.service) +
+[`deploy/ai-assistant-watchdog.timer`](deploy/ai-assistant-watchdog.timer))
+re-runs `run_local.sh` every 2 minutes. Because `run_local.sh` is idempotent —
+it leaves live processes alone and only (re)starts dead ones — the timer
+resurrects the bot (or any agent) within ~2 min of a crash, and the `OnBootSec=90s`
+first tick clears the boot DNS race automatically.
+
+```bash
+cp deploy/ai-assistant-watchdog.service deploy/ai-assistant-watchdog.timer ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now ai-assistant-watchdog.timer
+
+systemctl --user list-timers ai-assistant-watchdog.timer   # see next run
+journalctl --user -u ai-assistant-watchdog.service -f       # watch resurrections
+```
 
 ### Send a Task via Telegram
 
