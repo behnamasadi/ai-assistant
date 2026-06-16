@@ -31,7 +31,11 @@
 set -u
 
 PRINT_ONLY=0
-[ "${1:-}" = "--print" ] && PRINT_ONLY=1
+NOTIFY=0
+case "${1:-}" in
+  --print)  PRINT_ONLY=1 ;;
+  --notify) NOTIFY=1 ;;     # speak a Claude Notification's .message verbatim
+esac
 
 [ -f "$HOME/.claude/tts-disabled" ] && exit 0
 # shellcheck disable=SC1091
@@ -168,7 +172,56 @@ is_non_answer() {
   return 1
 }
 
+# ── (4) SPEAK: text → neural voice → (optional) light envelope ───────────────
+# Shared by the Stop summary and the Notification cue.
+speak_text() {
+  local say="$1"
+  [ -z "$say" ] && return 0
+  [ -x "$EDGE" ] || return 0
+  command -v ffplay >/dev/null 2>&1 || return 0
+  local MP3="/tmp/tts-claude-$$.mp3"
+  local EDGE_ARGS=(--voice "$VOICE" --rate "$RATE")
+  [ -n "$PITCH" ] && EDGE_ARGS+=(--pitch "$PITCH")
+  EDGE_ARGS+=(--text "$say" --write-media "$MP3")
+  "$EDGE" "${EDGE_ARGS[@]}" >/dev/null 2>&1
+  if [ -s "$MP3" ]; then
+    # LIGHTS — engine-independent: pulse fans with the spoken line.
+    local RGBRUN=/run/rgbfan
+    if [ -d "$RGBRUN" ] && [ "$(cat "$RGBRUN/mode" 2>/dev/null)" = talking ]; then
+      ffmpeg -v quiet -i "$MP3" -ac 1 -ar 8000 -f s16le - 2>/dev/null \
+        | "$ENVELOPE_PYTHON" "$ENVELOPE_PY" > "$RGBRUN/env.json" 2>/dev/null
+      date +%s.%N > "$RGBRUN/talk" 2>/dev/null
+    fi
+    ffplay -nodisp -autoexit -loglevel quiet "$MP3" >/dev/null 2>&1
+    : > "$RGBRUN/talk" 2>/dev/null
+  fi
+  rm -f "$MP3"
+}
+
 INPUT=$(cat)
+
+# ── --notify mode: speak the notification message itself (no summarize) ──────
+# Fires on Claude's Notification hook (permission prompt / idle "waiting for
+# input"). Backgrounded; deduped against the previous notification so a
+# repeated idle prompt isn't spoken twice in a row.
+if [ "$NOTIFY" = 1 ]; then
+  (
+    exec 8>/tmp/tts-claude-notify.lock
+    flock -n 8 || exit 0
+    MSG=$(printf '%s' "$INPUT" | jq -r '.message // empty' 2>/dev/null)
+    [ -z "$MSG" ] && MSG=$(printf '%s' "$INPUT")   # generic: raw text
+    [ -z "$MSG" ] && exit 0
+    NHASH=$(printf '%s' "$MSG" | sha1sum | cut -d' ' -f1)
+    NHASH_FILE="/tmp/tts-claude.notify-hash"
+    if [ -f "$NHASH_FILE" ] && [ "$(cat "$NHASH_FILE" 2>/dev/null)" = "$NHASH" ]; then
+      exit 0
+    fi
+    printf '%s' "$NHASH" > "$NHASH_FILE"
+    speak_text "$MSG"
+  ) </dev/null >/dev/null 2>&1 &
+  disown
+  exit 0
+fi
 
 # ── --print mode: extract + summarize + print, then exit (test / scripting) ──
 if [ "$PRINT_ONLY" = 1 ]; then
@@ -207,27 +260,7 @@ fi
   SUMMARY=$(summarize "$TEXT" | clean_summary)
   is_non_answer "$SUMMARY" && exit 0
 
-  [ -x "$EDGE" ] || exit 0
-  command -v ffplay >/dev/null 2>&1 || exit 0
-
-  MP3="/tmp/tts-claude-$$.mp3"
-  EDGE_ARGS=(--voice "$VOICE" --rate "$RATE")
-  [ -n "$PITCH" ] && EDGE_ARGS+=(--pitch "$PITCH")
-  EDGE_ARGS+=(--text "$SUMMARY" --write-media "$MP3")
-  "$EDGE" "${EDGE_ARGS[@]}" >/dev/null 2>&1
-
-  if [ -s "$MP3" ]; then
-    # (5) LIGHTS — engine-independent: pulse fans with the spoken summary.
-    RGBRUN=/run/rgbfan
-    if [ -d "$RGBRUN" ] && [ "$(cat "$RGBRUN/mode" 2>/dev/null)" = talking ]; then
-      ffmpeg -v quiet -i "$MP3" -ac 1 -ar 8000 -f s16le - 2>/dev/null \
-        | "$ENVELOPE_PYTHON" "$ENVELOPE_PY" > "$RGBRUN/env.json" 2>/dev/null
-      date +%s.%N > "$RGBRUN/talk" 2>/dev/null
-    fi
-    ffplay -nodisp -autoexit -loglevel quiet "$MP3" >/dev/null 2>&1
-    : > "$RGBRUN/talk" 2>/dev/null
-  fi
-  rm -f "$MP3"
+  speak_text "$SUMMARY"
 ) </dev/null >/dev/null 2>&1 &
 disown
 
