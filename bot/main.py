@@ -59,6 +59,49 @@ def _authorized(update: Update) -> bool:
     return True
 
 
+def _agent_mode_on(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> bool:
+    """True if this chat is in full-access Claude Code 'agent mode'.
+
+    Off by default: plain messages stay read-only / plan-gated until the user
+    runs /agent on. Locked to the one allowed Telegram user either way."""
+    return bool(context.application.bot_data.get(f"agent_mode:{chat_id}"))
+
+
+# Telegram rejects messages longer than 4096 chars; split on paragraph/line
+# boundaries so long agent replies still arrive intact.
+_TG_LIMIT = 4000
+
+
+def _chunk(text: str, limit: int = _TG_LIMIT) -> list[str]:
+    if len(text) <= limit:
+        return [text]
+    chunks, buf = [], ""
+    for line in text.splitlines(keepends=True):
+        if len(buf) + len(line) > limit and buf:
+            chunks.append(buf)
+            buf = ""
+        # A single very long line still has to be hard-split.
+        while len(line) > limit:
+            chunks.append(line[:limit])
+            line = line[limit:]
+        buf += line
+    if buf:
+        chunks.append(buf)
+    return chunks
+
+
+async def _reply_long(message, text: str) -> None:
+    """Reply to a Telegram message, splitting over the 4096-char limit.
+
+    Falls back to plain text if Markdown fails to parse (agent output isn't
+    guaranteed to be valid Telegram Markdown)."""
+    for part in _chunk(text):
+        try:
+            await message.reply_text(part, parse_mode="Markdown")
+        except Exception:
+            await message.reply_text(part)
+
+
 _whisper_model = None
 
 
@@ -126,6 +169,8 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("plans", "List all plans"),
     ("plan", "<id> — details for one plan"),
     ("build", "<task> — explicitly build & commit a change"),
+    ("agent", "on|off — full-access Claude Code on this machine"),
+    ("reset", "Start a fresh agent conversation"),
     ("resume", "<plan-id> — resume a paused plan"),
     ("abort", "<plan-id> — abort a plan"),
 ]
@@ -148,6 +193,12 @@ HELP_TEXT = (
     "🛠 *Managing builds:*\n"
     "• /resume `<plan-id>` — resume a paused plan\n"
     "• /abort `<plan-id>` — abort a plan\n\n"
+    "🤖 *Agent mode — full Claude Code on my machine:*\n"
+    "• /agent `on` — every message (text or voice) runs Claude Code here: it can "
+    "read, edit, run commands, and spawn sub-agents, just like the CLI. One "
+    "continuous conversation that remembers context.\n"
+    "• /agent `off` — back to safe read-only + plan-gated builds\n"
+    "• /reset — start a fresh agent conversation\n\n"
     "Nothing reaches production without your explicit approval."
 )
 
@@ -440,6 +491,13 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = update.message.text.strip()
     store: TaskStore = context.application.bot_data["store"]
 
+    # Agent mode: full-access Claude Code on this machine. Every message is a turn
+    # in one continuous agentic conversation that can read, edit, run, and spawn
+    # sub-agents — no triage, no plan gate. (Enabled per chat with /agent on.)
+    if _agent_mode_on(context, update.effective_chat.id):
+        await _run_agent_turn(update, context, text)
+        return
+
     # Free-text edits to a pending plan: user replied to the plan message.
     reply = update.message.reply_to_message
     if reply is not None:
@@ -474,6 +532,101 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         f"🧩 Planning `{plan.plan_id}`…",
         parse_mode="Markdown",
+    )
+
+
+async def _run_agent_turn(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, prompt: str,
+) -> None:
+    """Drive one full-access Claude Code turn and stream the result to Telegram."""
+    from bot import agent_session
+
+    chat_id = update.effective_chat.id
+    if not agent_session.is_available():
+        await update.message.reply_text(
+            "⚠️ Agent mode needs the Claude Agent SDK and a valid `GIT_REPO_PATH`, "
+            "which aren't available right now. Falling back to read-only — turn it "
+            "off with /agent off.",
+            parse_mode="Markdown",
+        )
+        return
+
+    await context.application.bot.send_chat_action(chat_id=chat_id, action="typing")
+
+    # Best-effort live progress: tell the user what the agent is doing as it works.
+    async def _progress(line: str) -> None:
+        try:
+            await context.application.bot.send_message(
+                chat_id=chat_id, text=line, parse_mode="Markdown",
+            )
+        except Exception:
+            pass
+
+    try:
+        answer = await agent_session.run_turn(chat_id, prompt, on_progress=_progress)
+    except asyncio.TimeoutError:
+        await update.message.reply_text(
+            "⏱ The agent took too long and timed out. Try a smaller step, or "
+            "/reset to start a fresh session."
+        )
+        return
+    except Exception as exc:
+        log(logger, "error", "agent turn failed", error=str(exc))
+        await update.message.reply_text(f"⚠️ Agent error: {exc}")
+        return
+
+    await _reply_long(update.message, answer)
+
+
+async def on_agent(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Toggle full-access Claude Code agent mode for this chat.
+
+    /agent on  — every message runs Claude Code on the machine (read/edit/run/sub-agents)
+    /agent off — back to read-only conversation + plan-gated builds
+    /agent     — show current state"""
+    if not _authorized(update) or not update.message:
+        return
+    chat_id = update.effective_chat.id
+    arg = (context.args[0].lower() if context.args else "").strip()
+    key = f"agent_mode:{chat_id}"
+
+    if arg in ("on", "start", "enable"):
+        context.application.bot_data[key] = True
+        await update.message.reply_text(
+            "🤖 *Agent mode ON.* I'm now your Claude Code on this machine — every "
+            "message is a turn in one agentic conversation that can read, edit, run "
+            "commands, and spawn sub-agents against the target repo. No plan gate.\n\n"
+            "• /agent off — back to safe read-only mode\n"
+            "• /reset — start a fresh conversation",
+            parse_mode="Markdown",
+        )
+        return
+    if arg in ("off", "stop", "disable"):
+        context.application.bot_data[key] = False
+        await update.message.reply_text(
+            "💬 *Agent mode OFF.* Back to read-only conversation; code changes go "
+            "through /build and plan approval again.",
+            parse_mode="Markdown",
+        )
+        return
+
+    state = "ON 🤖" if _agent_mode_on(context, chat_id) else "OFF 💬"
+    await update.message.reply_text(
+        f"Agent mode is *{state}*.\n\nUse `/agent on` or `/agent off`.",
+        parse_mode="Markdown",
+    )
+
+
+async def on_reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Forget the agent-mode conversation for this chat and start fresh."""
+    if not _authorized(update) or not update.message:
+        return
+    from bot import agent_session
+
+    had = agent_session.reset(update.effective_chat.id)
+    await update.message.reply_text(
+        "🧹 Fresh start — agent conversation cleared." if had
+        else "Nothing to reset; no active agent conversation."
     )
 
 
@@ -525,6 +678,15 @@ async def on_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "🎙 Voice received but transcription failed. "
             "Please try again or send text instead."
         )
+        return
+
+    # In agent mode a voice note is just another command — transcribe it and run
+    # it straight through Claude Code, no confirmation menu.
+    if _agent_mode_on(context, update.effective_chat.id):
+        await update.message.reply_text(
+            f"🎙 _{transcript}_", parse_mode="Markdown",
+        )
+        await _run_agent_turn(update, context, transcript)
         return
 
     keyboard = InlineKeyboardMarkup([
@@ -885,6 +1047,8 @@ def main() -> None:
     app.add_handler(CommandHandler("tasks", on_tasks))
     app.add_handler(CommandHandler("task", on_task_detail))
     app.add_handler(CommandHandler("build", on_build))
+    app.add_handler(CommandHandler("agent", on_agent))
+    app.add_handler(CommandHandler("reset", on_reset))
     app.add_handler(CommandHandler("plans", on_plans))
     app.add_handler(CommandHandler("plan", on_plan_detail))
     app.add_handler(CommandHandler("resume", on_resume))

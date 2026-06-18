@@ -27,6 +27,18 @@ disallowed and a `can_use_tool` gate rejects any non-read-only Bash command.
 Set `BUILD_REQUIRES_TRIGGER=false` to restore the old behaviour where the triage
 classifier could auto-route a message into a build.
 
+## Agent mode: full Claude Code over Telegram
+
+`/agent on` turns the chat into a **full-access Claude Code session on the host
+machine** — every text or voice message becomes a turn in one continuous agentic
+conversation that can read, edit, run commands, and spawn sub-agents against
+`GIT_REPO_PATH`, exactly like the CLI. This bypasses the read-only/plan gate, so
+it is **off by default** and only ever reachable by the single allowed Telegram
+user (`TELEGRAM_ALLOWED_USER_ID`) — that one gate is what makes exposing
+Write/Edit/Bash acceptable. `/agent off` returns to safe mode; `/reset` clears the
+conversation. Implemented in `bot/agent_session.py` (`permission_mode=
+"bypassPermissions"`, per-chat session resume for context continuity).
+
 ## Target project
 
 The agents work on **any repository** configured via environment variables.
@@ -55,6 +67,7 @@ All project-specific settings come from `.env`:
 | `DEPLOY_PROD_COMMAND` | Command to deploy to production (optional) |
 | `BUILD_REQUIRES_TRIGGER` | `true` (default) = plain messages never build; only `/build`/🔨 do. `false` restores auto-routing |
 | `INSPECT_TIMEOUT_SECONDS` | Max seconds for a read-only repo inspection (default `180`) |
+| `AGENT_TURN_TIMEOUT_SECONDS` | Max seconds for one full-access agent-mode turn (default `900`) |
 
 ## Key rules
 
